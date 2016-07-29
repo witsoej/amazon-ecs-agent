@@ -1,4 +1,4 @@
-// Copyright 2014-2015 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+// Copyright 2014-2016 Amazon.com, Inc. or its affiliates. All Rights Reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License"). You may
 // not use this file except in compliance with the License. A copy of the
@@ -16,6 +16,11 @@ package handlers
 import "net/http"
 
 type LoggingHandler struct{ h http.Handler }
+
+// NewLoggingHandler creates a new LoggingHandler object.
+func NewLoggingHandler(handler http.Handler) LoggingHandler {
+	return LoggingHandler{h: handler}
+}
 
 func (lh LoggingHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	log.Info("Handling http request", "method", r.Method, "from", r.RemoteAddr, "uri", r.RequestURI)

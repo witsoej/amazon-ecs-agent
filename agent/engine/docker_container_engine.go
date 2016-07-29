@@ -1,4 +1,4 @@
-// Copyright 2014-2015 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+// Copyright 2014-2016 Amazon.com, Inc. or its affiliates. All Rights Reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License"). You may
 // not use this file except in compliance with the License. A copy of the
@@ -17,7 +17,6 @@ import (
 	"archive/tar"
 	"bufio"
 	"io"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -31,17 +30,14 @@ import (
 	"github.com/aws/amazon-ecs-agent/agent/engine/dockerclient"
 	"github.com/aws/amazon-ecs-agent/agent/engine/dockeriface"
 	"github.com/aws/amazon-ecs-agent/agent/engine/emptyvolume"
-	"github.com/aws/amazon-ecs-agent/agent/utils"
 	"github.com/aws/amazon-ecs-agent/agent/utils/ttime"
 	"github.com/cihub/seelog"
-	"github.com/docker/docker/pkg/parsers"
 
 	docker "github.com/fsouza/go-dockerclient"
 )
 
 const (
-	dockerStopTimeoutSeconds = 30
-	dockerDefaultTag         = "latest"
+	dockerDefaultTag = "latest"
 )
 
 // Timelimits for docker operations enforced above docker
@@ -49,7 +45,7 @@ const (
 	pullImageTimeout        = 2 * time.Hour
 	createContainerTimeout  = 3 * time.Minute
 	startContainerTimeout   = 1*time.Minute + 30*time.Second
-	stopContainerTimeout    = 1 * time.Minute
+	stopContainerTimeout    = 30 * time.Second
 	removeContainerTimeout  = 5 * time.Minute
 	inspectContainerTimeout = 30 * time.Second
 	listContainersTimeout   = 10 * time.Minute
@@ -58,6 +54,10 @@ const (
 	// we expect to see output on the pull progress stream. This is to work
 	// around a docker bug which sometimes results in pulls not progressing.
 	dockerPullBeginTimeout = 5 * time.Minute
+
+	// pullStatusSuppressDelay controls the time where pull status progress bar
+	// output will be suppressed in debug mode
+	pullStatusSuppressDelay = 2 * time.Second
 )
 
 // Interface to make testing it easier
@@ -70,17 +70,16 @@ type DockerClient interface {
 	ContainerEvents(ctx context.Context) (<-chan DockerContainerChangeEvent, error)
 
 	PullImage(image string, authData *api.RegistryAuthenticationData) DockerContainerMetadata
+
 	CreateContainer(*docker.Config, *docker.HostConfig, string) DockerContainerMetadata
 	StartContainer(string) DockerContainerMetadata
 	StopContainer(string) DockerContainerMetadata
 	DescribeContainer(string) (api.ContainerStatus, DockerContainerMetadata)
-
 	RemoveContainer(string) error
 
-	GetContainerName(string) (string, error)
 	InspectContainer(string) (*docker.Container, error)
-
 	ListContainers(bool) ListContainersResponse
+	Stats(string, context.Context) (<-chan *docker.Stats, error)
 
 	Version() (string, error)
 }
@@ -105,6 +104,10 @@ type dockerGoClient struct {
 	version          dockerclient.DockerVersion
 	auth             dockerauth.DockerAuthProvider
 	ecrClientFactory ecr.ECRFactory
+	config           *config.Config
+
+	_time     ttime.Time
+	_timeOnce sync.Once
 }
 
 func (dg *dockerGoClient) WithVersion(version dockerclient.DockerVersion) DockerClient {
@@ -112,6 +115,7 @@ func (dg *dockerGoClient) WithVersion(version dockerclient.DockerVersion) Docker
 		clientFactory: dg.clientFactory,
 		version:       version,
 		auth:          dg.auth,
+		config:        dg.config,
 	}
 }
 
@@ -126,15 +130,10 @@ type DockerImageResponse struct {
 }
 
 // NewDockerGoClient creates a new DockerGoClient
-func NewDockerGoClient(clientFactory dockerclient.Factory, authType string, authData *config.SensitiveRawMessage, acceptInsecureCert bool) (DockerClient, error) {
-	endpoint := utils.DefaultIfBlank(os.Getenv(DOCKER_ENDPOINT_ENV_VARIABLE), DOCKER_DEFAULT_ENDPOINT)
-	if clientFactory == nil {
-		clientFactory = dockerclient.NewFactory(endpoint)
-	}
-
+func NewDockerGoClient(clientFactory dockerclient.Factory, acceptInsecureCert bool, cfg *config.Config) (DockerClient, error) {
 	client, err := clientFactory.GetDefaultClient()
 	if err != nil {
-		log.Error("Unable to connect to docker daemon . Ensure docker is running", "endpoint", endpoint, "err", err)
+		log.Error("Unable to connect to docker daemon. Ensure docker is running.", "err", err)
 		return nil, err
 	}
 
@@ -142,14 +141,15 @@ func NewDockerGoClient(clientFactory dockerclient.Factory, authType string, auth
 	// to ensure it's up.
 	err = client.Ping()
 	if err != nil {
-		log.Error("Unable to ping docker daemon. Ensure docker is running", "endpoint", endpoint, "err", err)
+		log.Error("Unable to ping docker daemon. Ensure docker is running.", "err", err)
 		return nil, err
 	}
 
 	return &dockerGoClient{
 		clientFactory:    clientFactory,
-		auth:             dockerauth.NewDockerAuthProvider(authType, authData.Contents()),
+		auth:             dockerauth.NewDockerAuthProvider(cfg.EngineAuthType, cfg.EngineAuthData.Contents()),
 		ecrClientFactory: ecr.NewECRFactory(acceptInsecureCert),
+		config:           cfg,
 	}, nil
 }
 
@@ -160,8 +160,17 @@ func (dg *dockerGoClient) dockerClient() (dockeriface.Client, error) {
 	return dg.clientFactory.GetClient(dg.version)
 }
 
+func (dg *dockerGoClient) time() ttime.Time {
+	dg._timeOnce.Do(func() {
+		if dg._time == nil {
+			dg._time = &ttime.DefaultTime{}
+		}
+	})
+	return dg._time
+}
+
 func (dg *dockerGoClient) PullImage(image string, authData *api.RegistryAuthenticationData) DockerContainerMetadata {
-	timeout := ttime.After(pullImageTimeout)
+	timeout := dg.time().After(pullImageTimeout)
 
 	// Workaround for devicemapper bug. See:
 	// https://github.com/docker/docker/issues/9718
@@ -188,22 +197,22 @@ func (dg *dockerGoClient) pullImage(image string, authData *api.RegistryAuthenti
 	// Special case; this image is not one that should be pulled, but rather
 	// should be created locally if necessary
 	if image == emptyvolume.Image+":"+emptyvolume.Tag {
-		err := dg.createScratchImageIfNotExists()
-		if err != nil {
-			return DockerContainerMetadata{Error: &api.DefaultNamedError{Name: "CreateEmptyVolumeError", Err: "Could not create empty volume " + err.Error()}}
+		scratchErr := dg.createScratchImageIfNotExists()
+		if scratchErr != nil {
+			return DockerContainerMetadata{Error: &api.DefaultNamedError{Name: "CreateEmptyVolumeError", Err: "Could not create empty volume " + scratchErr.Error()}}
 		}
 		return DockerContainerMetadata{}
 	}
 
 	authConfig, err := dg.getAuthdata(image, authData)
 	if err != nil {
-		return DockerContainerMetadata{Error: err}
+		return DockerContainerMetadata{Error: CannotXContainerError{"Pull", err.Error()}}
 	}
 
 	pullDebugOut, pullWriter := io.Pipe()
 	defer pullWriter.Close()
 
-	repository, tag := parsers.ParseRepositoryTag(image)
+	repository, tag := docker.ParseRepositoryTag(image)
 	if tag == "" {
 		repository = repository + ":" + dockerDefaultTag
 	} else {
@@ -214,7 +223,7 @@ func (dg *dockerGoClient) pullImage(image string, authData *api.RegistryAuthenti
 		Repository:   repository,
 		OutputStream: pullWriter,
 	}
-	timeout := ttime.After(dockerPullBeginTimeout)
+	timeout := dg.time().After(dockerPullBeginTimeout)
 	// pullBegan is a channel indicating that we have seen at least one line of data on the 'OutputStream' above.
 	// It is here to guard against a bug wherin docker never writes anything to that channel and hangs in pulling forever.
 	pullBegan := make(chan bool, 1)
@@ -224,23 +233,31 @@ func (dg *dockerGoClient) pullImage(image string, authData *api.RegistryAuthenti
 	go func() {
 		reader := bufio.NewReader(pullDebugOut)
 		var line string
-		var err error
-		for err == nil {
-			line, err = reader.ReadString('\n')
-			if err != nil {
+		var pullErr error
+		var statusDisplayed time.Time
+		for pullErr == nil {
+			line, pullErr = reader.ReadString('\n')
+			if pullErr != nil {
 				break
 			}
 			pullBeganOnce.Do(func() {
 				pullBegan <- true
 			})
-			log.Debug("Pulling image", "image", image, "status", line)
+
+			now := time.Now()
+			if !strings.Contains(line, "[=") || now.After(statusDisplayed.Add(pullStatusSuppressDelay)) {
+				// skip most of the progress bar lines, but retain enough for debugging
+				log.Debug("Pulling image", "image", image, "status", line)
+				statusDisplayed = now
+			}
+
 			if strings.Contains(line, "already being pulled by another client. Waiting.") {
-				// This can mean the deamon is 'hung' in pulling status for this image, but we can't be sure.
+				// This can mean the daemon is 'hung' in pulling status for this image, but we can't be sure.
 				log.Error("Image 'pull' status marked as already being pulled", "image", image, "status", line)
 			}
 		}
-		if err != nil && err != io.EOF {
-			log.Warn("Error reading pull image status", "image", image, "err", err)
+		if pullErr != nil && pullErr != io.EOF {
+			log.Warn("Error reading pull image status", "image", image, "err", pullErr)
 		}
 	}()
 	pullFinished := make(chan error, 1)
@@ -252,9 +269,9 @@ func (dg *dockerGoClient) pullImage(image string, authData *api.RegistryAuthenti
 	select {
 	case <-pullBegan:
 		break
-	case err := <-pullFinished:
-		if err != nil {
-			return DockerContainerMetadata{Error: CannotXContainerError{"Pull", err.Error()}}
+	case pullErr := <-pullFinished:
+		if pullErr != nil {
+			return DockerContainerMetadata{Error: CannotXContainerError{"Pull", pullErr.Error()}}
 		}
 		return DockerContainerMetadata{}
 	case <-timeout:
@@ -316,7 +333,7 @@ func (dg *dockerGoClient) getAuthdata(image string, authData *api.RegistryAuthen
 }
 
 func (dg *dockerGoClient) CreateContainer(config *docker.Config, hostConfig *docker.HostConfig, name string) DockerContainerMetadata {
-	timeout := ttime.After(createContainerTimeout)
+	timeout := dg.time().After(createContainerTimeout)
 
 	ctx, cancelFunc := context.WithCancel(context.TODO()) // Could pass one through from engine
 	response := make(chan DockerContainerMetadata, 1)
@@ -351,7 +368,7 @@ func (dg *dockerGoClient) createContainer(ctx context.Context, config *docker.Co
 }
 
 func (dg *dockerGoClient) StartContainer(id string) DockerContainerMetadata {
-	timeout := ttime.After(startContainerTimeout)
+	timeout := dg.time().After(startContainerTimeout)
 
 	ctx, cancelFunc := context.WithCancel(context.TODO()) // Could pass one through from engine
 	response := make(chan DockerContainerMetadata, 1)
@@ -402,7 +419,7 @@ func (dg *dockerGoClient) DescribeContainer(dockerId string) (api.ContainerStatu
 }
 
 func (dg *dockerGoClient) InspectContainer(dockerId string) (*docker.Container, error) {
-	timeout := ttime.After(inspectContainerTimeout)
+	timeout := dg.time().After(inspectContainerTimeout)
 
 	type inspectResponse struct {
 		container *docker.Container
@@ -430,8 +447,7 @@ func (dg *dockerGoClient) inspectContainer(dockerId string) (*docker.Container, 
 }
 
 func (dg *dockerGoClient) StopContainer(dockerId string) DockerContainerMetadata {
-	timeout := ttime.After(stopContainerTimeout)
-
+	timeout := dg.time().After(stopContainerTimeout + dg.config.DockerStopTimeout)
 	ctx, cancelFunc := context.WithCancel(context.TODO()) // Could pass one through from engine
 	// Buffered channel so in the case of timeout it takes one write, never gets
 	// read, and can still be GC'd
@@ -442,7 +458,7 @@ func (dg *dockerGoClient) StopContainer(dockerId string) DockerContainerMetadata
 		return resp
 	case <-timeout:
 		cancelFunc()
-		return DockerContainerMetadata{Error: &DockerTimeoutError{stopContainerTimeout, "stopped"}}
+		return DockerContainerMetadata{Error: &DockerTimeoutError{stopContainerTimeout + dg.config.DockerStopTimeout, "stopped"}}
 	}
 }
 
@@ -452,7 +468,7 @@ func (dg *dockerGoClient) stopContainer(ctx context.Context, dockerId string) Do
 		return DockerContainerMetadata{Error: CannotGetDockerClientError{version: dg.version, err: err}}
 	}
 
-	err = client.StopContainer(dockerId, dockerStopTimeoutSeconds)
+	err = client.StopContainer(dockerId, uint(dg.config.DockerStopTimeout/time.Second))
 	select {
 	case <-ctx.Done():
 		// parent function has already timed out and returned; we're writing to a
@@ -471,7 +487,7 @@ func (dg *dockerGoClient) stopContainer(ctx context.Context, dockerId string) Do
 }
 
 func (dg *dockerGoClient) RemoveContainer(dockerId string) error {
-	timeout := ttime.After(removeContainerTimeout)
+	timeout := dg.time().After(removeContainerTimeout)
 
 	response := make(chan error, 1)
 	go func() { response <- dg.removeContainer(dockerId) }()
@@ -491,18 +507,10 @@ func (dg *dockerGoClient) removeContainer(dockerId string) error {
 	return client.RemoveContainer(docker.RemoveContainerOptions{ID: dockerId, RemoveVolumes: true, Force: false})
 }
 
-func (dg *dockerGoClient) GetContainerName(id string) (string, error) {
-	container, err := dg.InspectContainer(id)
-	if err != nil {
-		return "", err
-	}
-	return container.Name, nil
-}
-
 func (dg *dockerGoClient) containerMetadata(id string) DockerContainerMetadata {
 	dockerContainer, err := dg.InspectContainer(id)
 	if err != nil {
-		return DockerContainerMetadata{Error: CannotXContainerError{"Inspect", err.Error()}}
+		return DockerContainerMetadata{DockerId: id, Error: CannotXContainerError{"Inspect", err.Error()}}
 	}
 	return metadataFromContainer(dockerContainer)
 }
@@ -574,9 +582,9 @@ func (dg *dockerGoClient) ContainerEvents(ctx context.Context) (<-chan DockerCon
 			case "stop":
 				fallthrough
 			case "die":
-				fallthrough
-			case "kill":
 				status = api.ContainerStopped
+			case "kill":
+				fallthrough
 			case "rename":
 				// TODO, ensure this wasn't one of our containers. This isn't critical
 				// because we typically have the docker id stored too and a wrong name
@@ -586,8 +594,8 @@ func (dg *dockerGoClient) ContainerEvents(ctx context.Context) (<-chan DockerCon
 			case "resize":
 			case "destroy":
 			case "unpause":
-				// These result in us falling through to inspect the container, some
-				// out of caution, some because it's a form of state change
+			// These result in us falling through to inspect the container, some
+			// out of caution, some because it's a form of state change
 
 			case "oom":
 				seelog.Infof("process within container %v died due to OOM", event.ID)
@@ -623,6 +631,10 @@ func (dg *dockerGoClient) ContainerEvents(ctx context.Context) (<-chan DockerCon
 				// No interest in image events
 				continue
 			default:
+				if strings.HasPrefix(event.Status, "exec_create:") || strings.HasPrefix(event.Status, "exec_start:") {
+					continue
+				}
+
 				// Because docker emits new events even when you use an old event api
 				// version, it's not that big a deal
 				seelog.Debugf("Unknown status event from docker: %s", event.Status)
@@ -642,7 +654,7 @@ func (dg *dockerGoClient) ContainerEvents(ctx context.Context) (<-chan DockerCon
 
 // ListContainers returns a slice of container IDs.
 func (dg *dockerGoClient) ListContainers(all bool) ListContainersResponse {
-	timeout := ttime.After(listContainersTimeout)
+	timeout := dg.time().After(listContainersTimeout)
 
 	response := make(chan ListContainersResponse, 1)
 	go func() { response <- dg.listContainers(all) }()
@@ -689,4 +701,40 @@ func (dg *dockerGoClient) Version() (string, error) {
 		return "", err
 	}
 	return "DockerVersion: " + info.Get("Version"), nil
+}
+
+// Stats returns a channel of *docker.Stats entries for the container.
+func (dg *dockerGoClient) Stats(id string, ctx context.Context) (<-chan *docker.Stats, error) {
+	client, err := dg.dockerClient()
+	if err != nil {
+		return nil, err
+	}
+
+	stats := make(chan *docker.Stats)
+	cancel := make(chan bool)
+	options := docker.StatsOptions{
+		ID:     id,
+		Stats:  stats,
+		Stream: true,
+		Done:   cancel,
+	}
+
+	statsComplete := make(chan struct{})
+	go func() {
+		statsErr := client.Stats(options)
+		if err != nil {
+			seelog.Warnf("Error retrieving stats for container %s: %v", id, statsErr)
+		}
+		close(statsComplete)
+	}()
+
+	go func() {
+		select {
+		case <-ctx.Done():
+			cancel <- true
+		case <-statsComplete:
+		}
+	}()
+
+	return stats, nil
 }

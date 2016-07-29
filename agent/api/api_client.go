@@ -1,4 +1,4 @@
-// Copyright 2014-2015 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+// Copyright 2014-2016 Amazon.com, Inc. or its affiliates. All Rights Reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License"). You may
 // not use this file except in compliance with the License. A copy of the
@@ -22,6 +22,7 @@ import (
 	"github.com/aws/amazon-ecs-agent/agent/ecs_client/model/ecs"
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/credentials"
+	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/docker/docker/pkg/system"
 
 	"github.com/aws/amazon-ecs-agent/agent/config"
@@ -109,7 +110,7 @@ func NewECSClient(credentialProvider *credentials.Credentials, config *config.Co
 	if config.APIEndpoint != "" {
 		ecsConfig.Endpoint = &config.APIEndpoint
 	}
-	standardClient := ecs.New(&ecsConfig)
+	standardClient := ecs.New(session.New(&ecsConfig))
 	submitStateChangeClient := newSubmitStateChangeClient(&ecsConfig)
 	return &ApiECSClient{
 		credentialProvider:      credentialProvider,
@@ -147,7 +148,7 @@ func (client *ApiECSClient) RegisterContainerInstance(containerInstanceArn strin
 	clusterRef := client.config.Cluster
 	// If our clusterRef is empty, we should try to create the default
 	if clusterRef == "" {
-		clusterRef = config.DEFAULT_CLUSTER_NAME
+		clusterRef = config.DefaultClusterName
 		defer func() {
 			// Update the config value to reflect the cluster we end up in
 			client.config.Cluster = clusterRef

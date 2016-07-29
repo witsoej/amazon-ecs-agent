@@ -1,4 +1,4 @@
-// Copyright 2014-2015 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+// Copyright 2014-2016 Amazon.com, Inc. or its affiliates. All Rights Reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License"). You may
 // not use this file except in compliance with the License. A copy of the
@@ -15,6 +15,7 @@ package engine
 
 import (
 	"encoding/base64"
+	"fmt"
 	"io/ioutil"
 	"net"
 	"os"
@@ -22,15 +23,19 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/aws/amazon-ecs-agent/agent/api"
 	"github.com/aws/amazon-ecs-agent/agent/config"
+	"github.com/aws/amazon-ecs-agent/agent/credentials"
 	"github.com/aws/amazon-ecs-agent/agent/ec2"
+	"github.com/aws/amazon-ecs-agent/agent/engine/dockerclient"
 	"github.com/aws/amazon-ecs-agent/agent/utils"
 	"github.com/aws/amazon-ecs-agent/agent/utils/ttime"
 	docker "github.com/fsouza/go-dockerclient"
+	"golang.org/x/net/context"
 )
 
 var testRegistryHost = "127.0.0.1:51670"
@@ -41,10 +46,18 @@ var testAuthRegistryImage = "127.0.0.1:51671/amazon/amazon-ecs-netkitten:latest"
 var testVolumeImage = "127.0.0.1:51670/amazon/amazon-ecs-volumes-test:latest"
 var testAuthUser = "user"
 var testAuthPass = "swordfish"
+var testDockerStopTimeout = 2 * time.Second
 
-var test_time = ttime.NewTestTime()
+func defaultTestConfig() *config.Config {
+	cfg, _ := config.NewConfig(ec2.NewBlackholeEC2MetadataClient())
+	return cfg
+}
 
-func setup(t *testing.T) (TaskEngine, func()) {
+func setupWithDefaultConfig(t *testing.T) (TaskEngine, func(), credentials.Manager) {
+	return setup(defaultTestConfig(), t)
+}
+
+func setup(cfg *config.Config, t *testing.T) (TaskEngine, func(), credentials.Manager) {
 	if testing.Short() {
 		t.Skip("Skipping integ test in short mode")
 	}
@@ -54,12 +67,18 @@ func setup(t *testing.T) (TaskEngine, func()) {
 	if os.Getenv("ECS_SKIP_ENGINE_INTEG_TEST") != "" {
 		t.Skip("ECS_SKIP_ENGINE_INTEG_TEST")
 	}
-	taskEngine := NewDockerTaskEngine(cfg, false)
+
+	clientFactory := dockerclient.NewFactory("unix:///var/run/docker.sock")
+	dockerClient, err := NewDockerGoClient(clientFactory, false, cfg)
+	if err != nil {
+		t.Fatalf("Error creating Docker client: %v", err)
+	}
+	credentialsManager := credentials.NewManager()
+	taskEngine := NewDockerTaskEngine(cfg, dockerClient, credentialsManager)
 	taskEngine.Init()
-	ttime.SetTime(test_time)
 	return taskEngine, func() {
 		taskEngine.Shutdown()
-	}
+	}, credentialsManager
 }
 
 func discardEvents(from interface{}) func() {
@@ -109,17 +128,11 @@ func createTestTask(arn string) *api.Task {
 	}
 }
 
-var cfg *config.Config
-
-func init() {
-	cfg, _ = config.NewConfig(ec2.NewBlackholeEC2MetadataClient())
-}
-
 var endpoint = utils.DefaultIfBlank(os.Getenv(DOCKER_ENDPOINT_ENV_VARIABLE), DOCKER_DEFAULT_ENDPOINT)
 
 func removeImage(img string) {
-	endpoint := utils.DefaultIfBlank(os.Getenv(DOCKER_ENDPOINT_ENV_VARIABLE), DOCKER_DEFAULT_ENDPOINT)
-	client, _ := docker.NewClient(endpoint)
+	removeEndpoint := utils.DefaultIfBlank(os.Getenv(DOCKER_ENDPOINT_ENV_VARIABLE), DOCKER_DEFAULT_ENDPOINT)
+	client, _ := docker.NewClient(removeEndpoint)
 
 	client.RemoveImage(img)
 }
@@ -140,7 +153,7 @@ func dialWithRetries(proto string, address string, tries int, timeout time.Durat
 // TestStartStopUnpulledImage ensures that an unpulled image is successfully
 // pulled, run, and stopped via docker.
 func TestStartStopUnpulledImage(t *testing.T) {
-	taskEngine, done := setup(t)
+	taskEngine, done, _ := setupWithDefaultConfig(t)
 	defer done()
 	// Ensure this image isn't pulled by deleting it
 	removeImage(testRegistryImage)
@@ -174,7 +187,7 @@ func TestStartStopUnpulledImage(t *testing.T) {
 // specified digest is successfully pulled, run, and stopped via docker.
 func TestStartStopUnpulledImageDigest(t *testing.T) {
 	imageDigest := "tianon/true@sha256:30ed58eecb0a44d8df936ce2efce107c9ac20410c915866da4c6a33a3795d057"
-	taskEngine, done := setup(t)
+	taskEngine, done, _ := setupWithDefaultConfig(t)
 	defer done()
 	// Ensure this image isn't pulled by deleting it
 	removeImage(imageDigest)
@@ -209,7 +222,7 @@ func TestStartStopUnpulledImageDigest(t *testing.T) {
 // 24751 and verifies that when you do forward the port you can access it and if
 // you don't forward the port you can't
 func TestPortForward(t *testing.T) {
-	taskEngine, done := setup(t)
+	taskEngine, done, _ := setupWithDefaultConfig(t)
 	defer done()
 
 	taskEvents, contEvents := taskEngine.TaskEvents()
@@ -318,7 +331,7 @@ func TestPortForward(t *testing.T) {
 // TestMultiplePortForwards tests that two links containers in the same task can
 // both expose ports successfully
 func TestMultiplePortForwards(t *testing.T) {
-	taskEngine, done := setup(t)
+	taskEngine, done, _ := setupWithDefaultConfig(t)
 	defer done()
 
 	taskEvents, containerEvents := taskEngine.TaskEvents()
@@ -387,7 +400,7 @@ func TestMultiplePortForwards(t *testing.T) {
 // TestDynamicPortForward runs a container serving data on a port chosen by the
 // docker deamon and verifies that the port is reported in the state-change
 func TestDynamicPortForward(t *testing.T) {
-	taskEngine, done := setup(t)
+	taskEngine, done, _ := setupWithDefaultConfig(t)
 	defer done()
 
 	taskEvents, contEvents := taskEngine.TaskEvents()
@@ -461,7 +474,7 @@ PortsBound:
 }
 
 func TestMultipleDynamicPortForward(t *testing.T) {
-	taskEngine, done := setup(t)
+	taskEngine, done, _ := setupWithDefaultConfig(t)
 	defer done()
 
 	taskEvents, contEvents := taskEngine.TaskEvents()
@@ -549,7 +562,7 @@ func TestMultipleDynamicPortForward(t *testing.T) {
 // prints "hello linker" and then links a container that proxies that data to
 // a publicly exposed port, where the tests reads it
 func TestLinking(t *testing.T) {
-	taskEngine, done := setup(t)
+	taskEngine, done, _ := setupWithDefaultConfig(t)
 	defer done()
 
 	testTask := createTestTask("TestLinking")
@@ -618,11 +631,12 @@ func TestLinking(t *testing.T) {
 
 func TestDockerCfgAuth(t *testing.T) {
 	authString := base64.StdEncoding.EncodeToString([]byte(testAuthUser + ":" + testAuthPass))
+	cfg := defaultTestConfig()
 	cfg.EngineAuthData = config.NewSensitiveRawMessage([]byte(`{"http://` + testAuthRegistryHost + `/v1/":{"auth":"` + authString + `"}}`))
 	cfg.EngineAuthType = "dockercfg"
 
 	removeImage(testAuthRegistryImage)
-	taskEngine, done := setup(t)
+	taskEngine, done, _ := setup(cfg, t)
 	defer done()
 	defer func() {
 		cfg.EngineAuthData = config.NewSensitiveRawMessage(nil)
@@ -668,6 +682,7 @@ func TestDockerCfgAuth(t *testing.T) {
 }
 
 func TestDockerAuth(t *testing.T) {
+	cfg := defaultTestConfig()
 	cfg.EngineAuthData = config.NewSensitiveRawMessage([]byte(`{"http://` + testAuthRegistryHost + `":{"username":"` + testAuthUser + `","password":"` + testAuthPass + `"}}`))
 	cfg.EngineAuthType = "docker"
 	defer func() {
@@ -675,7 +690,7 @@ func TestDockerAuth(t *testing.T) {
 		cfg.EngineAuthType = ""
 	}()
 
-	taskEngine, done := setup(t)
+	taskEngine, done, _ := setup(cfg, t)
 	defer done()
 	removeImage(testAuthRegistryImage)
 
@@ -718,7 +733,7 @@ func TestDockerAuth(t *testing.T) {
 }
 
 func TestVolumesFrom(t *testing.T) {
-	taskEngine, done := setup(t)
+	taskEngine, done, _ := setupWithDefaultConfig(t)
 	defer done()
 
 	taskEvents, contEvents := taskEngine.TaskEvents()
@@ -773,8 +788,7 @@ func TestVolumesFrom(t *testing.T) {
 }
 
 func TestVolumesFromRO(t *testing.T) {
-	t.Skip("Temporarily disabled due to docker bug in 1.7*")
-	taskEngine, done := setup(t)
+	taskEngine, done, _ := setupWithDefaultConfig(t)
 	defer done()
 
 	taskEvents, contEvents := taskEngine.TaskEvents()
@@ -820,7 +834,7 @@ func TestVolumesFromRO(t *testing.T) {
 }
 
 func TestHostVolumeMount(t *testing.T) {
-	taskEngine, done := setup(t)
+	taskEngine, done, _ := setupWithDefaultConfig(t)
 	defer done()
 
 	taskEvents, contEvents := taskEngine.TaskEvents()
@@ -857,7 +871,7 @@ func TestHostVolumeMount(t *testing.T) {
 }
 
 func TestEmptyHostVolumeMount(t *testing.T) {
-	taskEngine, done := setup(t)
+	taskEngine, done, _ := setupWithDefaultConfig(t)
 	defer done()
 
 	taskEvents, contEvents := taskEngine.TaskEvents()
@@ -892,7 +906,9 @@ func TestEmptyHostVolumeMount(t *testing.T) {
 }
 
 func TestSweepContainer(t *testing.T) {
-	taskEngine, done := setup(t)
+	cfg := defaultTestConfig()
+	cfg.TaskCleanupWaitDuration = 1 * time.Minute
+	taskEngine, done, _ := setup(cfg, t)
 	defer done()
 
 	taskEvents, contEvents := taskEngine.TaskEvents()
@@ -926,7 +942,7 @@ func TestSweepContainer(t *testing.T) {
 	if !ok {
 		t.Error("Expected task to be present still, but wasn't")
 	}
-	test_time.Warp(4 * time.Hour)
+	time.Sleep(1 * time.Minute)
 	for i := 0; i < 60; i++ {
 		_, ok = taskEngine.(*DockerTaskEngine).State().TaskByArn("testSweepContainer")
 		if !ok {
@@ -943,8 +959,15 @@ func TestSweepContainer(t *testing.T) {
 // https://github.com/aws/amazon-ecs-agent/issues/261
 // Namely, this test verifies that Docker does emit a 'die' event after an OOM
 // event if the init dies.
+// Note: Your kernel must support swap limits in order for this test to run.
+// See https://github.com/docker/docker/pull/4251 about enabling swap limit
+// support, or set MY_KERNEL_DOES_NOT_SUPPORT_SWAP_LIMIT to non-empty to skip
+// this test.
 func TestInitOOMEvent(t *testing.T) {
-	taskEngine, done := setup(t)
+	if os.Getenv("MY_KERNEL_DOES_NOT_SUPPORT_SWAP_LIMIT") != "" {
+		t.Skip("Skipped because MY_KERNEL_DOES_NOT_SUPPORT_SWAP_LIMIT")
+	}
+	taskEngine, done, _ := setupWithDefaultConfig(t)
 	defer done()
 
 	taskEvents, contEvents := taskEngine.TaskEvents()
@@ -993,5 +1016,188 @@ func TestInitOOMEvent(t *testing.T) {
 	}
 	if !strings.HasPrefix(contEvent.Reason, OutOfMemoryError{}.ErrorName()) {
 		t.Errorf("Expected reason to have OOM error, was: %v", contEvent.Reason)
+	}
+}
+
+// This integ test exercises the Docker "kill" facility, which exists to send
+// signals to PID 1 inside a container.  Starting with Docker 1.7, a `kill`
+// event was emitted by the Docker daemon on any `kill` invocation.
+// Signals used in this test:
+// SIGTERM - sent by Docker "stop" prior to SIGKILL (9)
+// SIGUSR1 - used for the test as an arbitrary signal
+func TestSignalEvent(t *testing.T) {
+	taskEngine, done, _ := setupWithDefaultConfig(t)
+	defer done()
+
+	taskEvents, contEvents := taskEngine.TaskEvents()
+	defer discardEvents(taskEvents)()
+
+	testTask := createTestTask("signaltest")
+	testTask.Containers[0].Image = testBusyboxImage
+	testTask.Containers[0].Command = []string{
+		"sh",
+		"-c",
+		fmt.Sprintf(`trap "exit 42" %d; trap "echo signal!" %d; while true; do sleep 1; done`, int(syscall.SIGTERM), int(syscall.SIGUSR1)),
+	}
+
+	go taskEngine.AddTask(testTask)
+	var contEvent api.ContainerStateChange
+	for contEvent = range contEvents {
+		if contEvent.TaskArn != testTask.Arn {
+			continue
+		}
+		if contEvent.Status == api.ContainerRunning {
+			break
+		} else if contEvent.Status > api.ContainerRunning {
+			t.Fatal("Task went straight to " + contEvent.Status.String() + " without running")
+		}
+	}
+
+	// Signal the container now
+	containerMap, _ := taskEngine.(*DockerTaskEngine).state.ContainerMapByArn(testTask.Arn)
+	cid := containerMap[testTask.Containers[0].Name].DockerId
+	client, _ := docker.NewClient(endpoint)
+	err := client.KillContainer(docker.KillContainerOptions{ID: cid, Signal: docker.Signal(int(syscall.SIGUSR1))})
+	if err != nil {
+		t.Error("Could not signal container", err)
+	}
+
+	// Verify the container has not stopped
+	time.Sleep(2 * time.Second)
+check_events:
+	for {
+		select {
+		case contEvent = <-contEvents:
+			if contEvent.TaskArn != testTask.Arn {
+				continue
+			}
+			t.Fatalf("Expected no events; got " + contEvent.Status.String())
+		default:
+			break check_events
+		}
+	}
+
+	// Stop the container now
+	taskUpdate := *testTask
+	taskUpdate.DesiredStatus = api.TaskStopped
+	go taskEngine.AddTask(&taskUpdate)
+	for contEvent = range contEvents {
+		if contEvent.TaskArn != testTask.Arn {
+			continue
+		}
+		if !(contEvent.Status >= api.ContainerStopped) {
+			t.Error("Expected only terminal events; got " + contEvent.Status.String())
+		}
+		break
+	}
+
+	if testTask.Containers[0].KnownExitCode == nil || *testTask.Containers[0].KnownExitCode != 42 {
+		t.Error("Wrong exit code; file probably wasn't present")
+	}
+}
+
+func TestDockerStopTimeout(t *testing.T) {
+	os.Setenv("ECS_CONTAINER_STOP_TIMEOUT", testDockerStopTimeout.String())
+	defer os.Unsetenv("ECS_CONTAINER_STOP_TIMEOUT")
+	cfg := defaultTestConfig()
+
+	taskEngine, done, _ := setup(cfg, t)
+
+	dockerTaskEngine := taskEngine.(*DockerTaskEngine)
+
+	if dockerTaskEngine.cfg.DockerStopTimeout != testDockerStopTimeout {
+		t.Errorf("Expect the docker stop timeout read from environment variable when ECS_CONTAINER_STOP_TIMEOUT is set, %v", dockerTaskEngine.cfg.DockerStopTimeout)
+	}
+	testTask := createTestTask("TestDockerStopTimeout")
+	testTask.Containers = append(testTask.Containers, createTestContainer())
+	testTask.Containers[0].Command = []string{"sh", "-c", "while true; do echo `date +%T`; sleep 1s; done;"}
+	testTask.Containers[0].Image = testBusyboxImage
+	testTask.Containers[0].Name = "test-docker-timeout"
+
+	taskEvents, contEvents := dockerTaskEngine.TaskEvents()
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		for {
+			select {
+			case <-taskEvents:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	defer func() {
+		done()
+		cancel()
+	}()
+
+	go dockerTaskEngine.AddTask(testTask)
+
+	for contEvent := range contEvents {
+		if contEvent.TaskArn != testTask.Arn {
+			continue
+		}
+		if contEvent.Status == api.ContainerRunning {
+			break
+		}
+		if contEvent.Status > api.ContainerRunning {
+			t.Error("Expect container to run not stop")
+		}
+	}
+
+	startTime := ttime.Now()
+	dockerTaskEngine.stopContainer(testTask, testTask.Containers[0])
+	for contEvent := range contEvents {
+		if contEvent.TaskArn != testTask.Arn {
+			continue
+		}
+		if contEvent.Status == api.ContainerRunning {
+			break
+		}
+		if contEvent.Status > api.ContainerStopped {
+			t.Error("Expect container to stop")
+		}
+	}
+	if ttime.Since(startTime) < testDockerStopTimeout {
+		t.Errorf("Container stopped before the timeout: %v", ttime.Since(startTime))
+	}
+	if ttime.Since(startTime) > testDockerStopTimeout+1*time.Second {
+		t.Errorf("Container should have stopped eariler, but stopped after %v", ttime.Since(startTime))
+	}
+}
+
+// TestStartStopWithCredentials starts and stops a task for which credentials id
+// has been set
+func TestStartStopWithCredentials(t *testing.T) {
+	taskEngine, done, credentialsManager := setupWithDefaultConfig(t)
+	defer done()
+
+	testTask := createTestTask("testStartWithCredentials")
+	taskCredentials := credentials.TaskIAMRoleCredentials{
+		IAMRoleCredentials: credentials.IAMRoleCredentials{CredentialsId: credentialsId},
+	}
+	credentialsManager.SetTaskCredentials(taskCredentials)
+	testTask.SetCredentialsId(credentialsId)
+
+	taskEvents, contEvents := taskEngine.TaskEvents()
+
+	defer discardEvents(contEvents)()
+
+	go taskEngine.AddTask(testTask)
+
+	for taskEvent := range taskEvents {
+		if taskEvent.TaskArn != testTask.Arn {
+			continue
+		}
+		// Wait until task is stopped
+		if taskEvent.Status == api.TaskStopped {
+			break
+		}
+	}
+
+	// When task is stopped, credentials should have been removed for the
+	// credentials id set in the task
+	_, ok := credentialsManager.GetTaskCredentials(credentialsId)
+	if ok {
+		t.Error("Credentials not removed from credentials manager for stopped task")
 	}
 }

@@ -1,4 +1,4 @@
-// Copyright 2014-2015 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+// Copyright 2014-2016 Amazon.com, Inc. or its affiliates. All Rights Reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License"). You may
 // not use this file except in compliance with the License. A copy of the
@@ -15,6 +15,7 @@ package config
 
 import (
 	"encoding/json"
+	"time"
 
 	"github.com/aws/amazon-ecs-agent/agent/engine/dockerclient"
 )
@@ -76,12 +77,13 @@ type Config struct {
 	// sent to the ECS telemetry endpoint
 	DisableMetrics bool
 
-	// DockerGraphPath specifies the path for docker graph directory.
-	DockerGraphPath string
-
 	// ReservedMemory specifies the amount of memory (in MB) to reserve for things
 	// other than containers managed by ECS
 	ReservedMemory uint16
+
+	// DockerStopTimeout specifies the amount time before a SIGKILL is issued to
+	// containers managed by ECS
+	DockerStopTimeout time.Duration
 
 	// AvailableLoggingDrivers specifies the logging drivers available for use
 	// with Docker.  If not set, it defaults to ["json-file"].
@@ -98,6 +100,20 @@ type Config struct {
 	// AppArmorCapable specifies whether the Agent is capable of using AppArmor
 	// security options
 	AppArmorCapable bool
+
+	// TaskCleanupWaitDuration specifies the time to wait after a task is stopped
+	// until cleanup of task resources is started.
+	TaskCleanupWaitDuration time.Duration
+
+	// TaskIAMRoleEnabled specifies if the Agent is capable of launching
+	// tasks with IAM Roles.
+	TaskIAMRoleEnabled bool
+
+	// CredentialsAuditLogFile specifies the path/filename of the audit log.
+	CredentialsAuditLogFile string
+
+	// CredentialsAuditLogEnabled specifies whether audit logging is disabled.
+	CredentialsAuditLogDisabled bool
 }
 
 // SensitiveRawMessage is a struct to store some data that should not be logged

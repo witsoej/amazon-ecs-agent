@@ -1,4 +1,4 @@
-// Copyright 2015 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+// Copyright 2015-2016 Amazon.com, Inc. or its affiliates. All Rights Reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License"). You may
 // not use this file except in compliance with the License. A copy of the
@@ -72,6 +72,17 @@ func (_m *MockTaskEngine) Disable() {
 
 func (_mr *_MockTaskEngineRecorder) Disable() *gomock.Call {
 	return _mr.mock.ctrl.RecordCall(_mr.mock, "Disable")
+}
+
+func (_m *MockTaskEngine) GetTaskByArn(_param0 string) (*api.Task, bool) {
+	ret := _m.ctrl.Call(_m, "GetTaskByArn", _param0)
+	ret0, _ := ret[0].(*api.Task)
+	ret1, _ := ret[1].(bool)
+	return ret0, ret1
+}
+
+func (_mr *_MockTaskEngineRecorder) GetTaskByArn(arg0 interface{}) *gomock.Call {
+	return _mr.mock.ctrl.RecordCall(_mr.mock, "GetTaskByArn", arg0)
 }
 
 func (_m *MockTaskEngine) Init() error {
@@ -207,17 +218,6 @@ func (_mr *_MockDockerClientRecorder) DescribeContainer(arg0 interface{}) *gomoc
 	return _mr.mock.ctrl.RecordCall(_mr.mock, "DescribeContainer", arg0)
 }
 
-func (_m *MockDockerClient) GetContainerName(_param0 string) (string, error) {
-	ret := _m.ctrl.Call(_m, "GetContainerName", _param0)
-	ret0, _ := ret[0].(string)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
-}
-
-func (_mr *_MockDockerClientRecorder) GetContainerName(arg0 interface{}) *gomock.Call {
-	return _mr.mock.ctrl.RecordCall(_mr.mock, "GetContainerName", arg0)
-}
-
 func (_m *MockDockerClient) InspectContainer(_param0 string) (*go_dockerclient.Container, error) {
 	ret := _m.ctrl.Call(_m, "InspectContainer", _param0)
 	ret0, _ := ret[0].(*go_dockerclient.Container)
@@ -267,6 +267,17 @@ func (_m *MockDockerClient) StartContainer(_param0 string) DockerContainerMetada
 
 func (_mr *_MockDockerClientRecorder) StartContainer(arg0 interface{}) *gomock.Call {
 	return _mr.mock.ctrl.RecordCall(_mr.mock, "StartContainer", arg0)
+}
+
+func (_m *MockDockerClient) Stats(_param0 string, _param1 context.Context) (<-chan *go_dockerclient.Stats, error) {
+	ret := _m.ctrl.Call(_m, "Stats", _param0, _param1)
+	ret0, _ := ret[0].(<-chan *go_dockerclient.Stats)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+func (_mr *_MockDockerClientRecorder) Stats(arg0, arg1 interface{}) *gomock.Call {
+	return _mr.mock.ctrl.RecordCall(_mr.mock, "Stats", arg0, arg1)
 }
 
 func (_m *MockDockerClient) StopContainer(_param0 string) DockerContainerMetadata {

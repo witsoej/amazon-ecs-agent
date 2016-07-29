@@ -1,4 +1,4 @@
-// Copyright 2014-2015 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+// Copyright 2014-2016 Amazon.com, Inc. or its affiliates. All Rights Reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License"). You may
 // not use this file except in compliance with the License. A copy of the
@@ -64,6 +64,55 @@ func mocks(t *testing.T, cfg *config.Config) (*updater, *gomock.Controller, *con
 	return u, ctrl, cfg, mockfs, mockacs, mockhttp
 }
 
+func TestStageUpdateWithUpdatesDisabled(t *testing.T) {
+	u, ctrl, _, _, mockacs, _ := mocks(t, &config.Config{
+		UpdatesEnabled: false,
+	})
+	defer ctrl.Finish()
+
+	mockacs.EXPECT().MakeRequest(&nackRequestMatcher{&ecsacs.NackRequest{
+		Cluster:           ptr("cluster").(*string),
+		ContainerInstance: ptr("containerInstance").(*string),
+		MessageId:         ptr("mid").(*string),
+		Reason:            ptr("Updates are disabled").(*string),
+	}})
+
+	u.stageUpdateHandler()(&ecsacs.StageUpdateMessage{
+		ClusterArn:           ptr("cluster").(*string),
+		ContainerInstanceArn: ptr("containerInstance").(*string),
+		MessageId:            ptr("mid").(*string),
+		UpdateInfo: &ecsacs.UpdateInfo{
+			Location:  ptr("https://s3.amazonaws.com/amazon-ecs-agent/update.tar").(*string),
+			Signature: ptr("6caeef375a080e3241781725b357890758d94b15d7ce63f6b2ff1cb5589f2007").(*string),
+		},
+	})
+
+}
+
+func TestPerformUpdateWithUpdatesDisabled(t *testing.T) {
+	u, ctrl, cfg, _, mockacs, _ := mocks(t, &config.Config{
+		UpdatesEnabled: false,
+	})
+	defer ctrl.Finish()
+
+	mockacs.EXPECT().MakeRequest(&nackRequestMatcher{&ecsacs.NackRequest{
+		Cluster:           ptr("cluster").(*string),
+		ContainerInstance: ptr("containerInstance").(*string),
+		MessageId:         ptr("mid").(*string),
+		Reason:            ptr("Updates are disabled").(*string),
+	}})
+
+	u.performUpdateHandler(statemanager.NewNoopStateManager(), engine.NewTaskEngine(cfg, nil, nil))(&ecsacs.PerformUpdateMessage{
+		ClusterArn:           ptr("cluster").(*string),
+		ContainerInstanceArn: ptr("containerInstance").(*string),
+		MessageId:            ptr("mid").(*string),
+		UpdateInfo: &ecsacs.UpdateInfo{
+			Location:  ptr("https://s3.amazonaws.com/amazon-ecs-agent/update.tar").(*string),
+			Signature: ptr("c54518806ff4d14b680c35784113e1e7478491fe").(*string),
+		},
+	})
+}
+
 func TestFullUpdateFlow(t *testing.T) {
 	u, ctrl, cfg, mockfs, mockacs, mockhttp := mocks(t, nil)
 	defer ctrl.Finish()
@@ -100,7 +149,7 @@ func TestFullUpdateFlow(t *testing.T) {
 		t.Error("Incorrect data written")
 	}
 
-	u.performUpdateHandler(statemanager.NewNoopStateManager(), engine.NewTaskEngine(cfg, false))(&ecsacs.PerformUpdateMessage{
+	u.performUpdateHandler(statemanager.NewNoopStateManager(), engine.NewTaskEngine(cfg, nil, nil))(&ecsacs.PerformUpdateMessage{
 		ClusterArn:           ptr("cluster").(*string),
 		ContainerInstanceArn: ptr("containerInstance").(*string),
 		MessageId:            ptr("mid2").(*string),
@@ -163,7 +212,7 @@ func TestUndownloadedUpdate(t *testing.T) {
 		MessageId:         ptr("mid").(*string),
 	}})
 
-	u.performUpdateHandler(statemanager.NewNoopStateManager(), engine.NewTaskEngine(cfg, false))(&ecsacs.PerformUpdateMessage{
+	u.performUpdateHandler(statemanager.NewNoopStateManager(), engine.NewTaskEngine(cfg, nil, nil))(&ecsacs.PerformUpdateMessage{
 		ClusterArn:           ptr("cluster").(*string),
 		ContainerInstanceArn: ptr("containerInstance").(*string),
 		MessageId:            ptr("mid").(*string),
@@ -223,7 +272,7 @@ func TestDuplicateUpdateMessagesWithSuccess(t *testing.T) {
 		t.Error("Incorrect data written")
 	}
 
-	u.performUpdateHandler(statemanager.NewNoopStateManager(), engine.NewTaskEngine(cfg, false))(&ecsacs.PerformUpdateMessage{
+	u.performUpdateHandler(statemanager.NewNoopStateManager(), engine.NewTaskEngine(cfg, nil, nil))(&ecsacs.PerformUpdateMessage{
 		ClusterArn:           ptr("cluster").(*string),
 		ContainerInstanceArn: ptr("containerInstance").(*string),
 		MessageId:            ptr("mid3").(*string),
@@ -290,7 +339,7 @@ func TestDuplicateUpdateMessagesWithFailure(t *testing.T) {
 		t.Error("Incorrect data written")
 	}
 
-	u.performUpdateHandler(statemanager.NewNoopStateManager(), engine.NewTaskEngine(cfg, false))(&ecsacs.PerformUpdateMessage{
+	u.performUpdateHandler(statemanager.NewNoopStateManager(), engine.NewTaskEngine(cfg, nil, nil))(&ecsacs.PerformUpdateMessage{
 		ClusterArn:           ptr("cluster").(*string),
 		ContainerInstanceArn: ptr("containerInstance").(*string),
 		MessageId:            ptr("mid3").(*string),
@@ -367,7 +416,7 @@ func TestNewerUpdateMessages(t *testing.T) {
 		t.Error("Incorrect data written")
 	}
 
-	u.performUpdateHandler(statemanager.NewNoopStateManager(), engine.NewTaskEngine(cfg, false))(&ecsacs.PerformUpdateMessage{
+	u.performUpdateHandler(statemanager.NewNoopStateManager(), engine.NewTaskEngine(cfg, nil, nil))(&ecsacs.PerformUpdateMessage{
 		ClusterArn:           ptr("cluster").(*string),
 		ContainerInstanceArn: ptr("containerInstance").(*string),
 		MessageId:            ptr("mid2").(*string),

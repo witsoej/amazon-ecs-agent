@@ -1,5 +1,46 @@
 # Changelog
 
+## 1.11.0
+* Feature - Support IAM roles for tasks
+* Feature - Add support for the Splunk logging driver
+* Enhancement - Reduced pull status verbosity in debug mode
+* Enhancement - Add a Docker label for ECS cluster
+* Bug - Fixed a bug that could cause a container to be marked as STOPPED while
+  still running on the instance
+* Bug - Fixed a potential race condition in metrics collection
+* Bug - Resolved a bug where some state could be retained across different
+  container instances when launching from a snapshotted AMI.
+
+## 1.10.0
+* Feature - Make the `docker stop` timeout configurable.
+* Enhancement - Use `docker stats` as the data source for CloudWatch metrics.
+* Bug - Fixed an issue where update requests would not be properly acknowledged
+  when updates were disabled.
+
+## 1.9.0
+* Feature - Add Amazon CloudWatch Logs logging driver.
+* Bug - Fixed ACS handler when acking blank message ids.
+* Bug - Fixed an issue where CPU utilization could be reported incorrectly.
+* Bug - Resolved a bug where containers would not get cleaned up in some cases.
+
+## 1.8.2
+* Bug - Fixed an issue where `exec_create` and `exec_start` events were not
+  correctly ignored with some Docker versions.
+* Bug - Fixed memory utilization computation.
+* Bug - Resolved a bug where sending a signal to a container caused the
+  agent to treat the container as dead.
+
+## 1.8.1
+* Bug - Fixed a potential deadlock in docker_task_engine.
+
+## 1.8.0
+* Feature - Task cleanup wait time is now configurable.
+* Enhancement - Improved testing for HTTP handler tests.
+* Enhancement - Updated AWS SDK to v.1.0.11.
+* Bug - Fixed a race condition in a docker-task-engine test.
+* Bug - Fixed an issue where dockerID was not persisted in the case of an
+  error.
+
 ## 1.7.1
 * Enhancement - Increase `docker inspect` timeout to improve reliability under
   some workloads.

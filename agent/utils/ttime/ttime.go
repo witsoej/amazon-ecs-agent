@@ -54,22 +54,7 @@ func Now() time.Time {
 	return _time.Now()
 }
 
-// Sleep calls the implementation's Sleep method
-func Sleep(d time.Duration) {
-	_time.Sleep(d)
-}
-
 // Since returns the time different from Now and the given time t
 func Since(t time.Time) time.Duration {
 	return _time.Now().Sub(t)
-}
-
-// After calls the implementations After method
-func After(t time.Duration) <-chan time.Time {
-	return _time.After(t)
-}
-
-// AfterFunc calls the implementations AfterFunc method
-func AfterFunc(d time.Duration, f func()) Timer {
-	return _time.AfterFunc(d, f)
 }

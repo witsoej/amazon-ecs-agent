@@ -1,4 +1,4 @@
-// Copyright 2014-2015 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+// Copyright 2014-2016 Amazon.com, Inc. or its affiliates. All Rights Reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License"). You may
 // not use this file except in compliance with the License. A copy of the
@@ -23,25 +23,46 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/aws/amazon-ecs-agent/agent/ec2"
 	"github.com/aws/amazon-ecs-agent/agent/engine/dockerclient"
-	"github.com/aws/amazon-ecs-agent/agent/logger"
 	"github.com/aws/amazon-ecs-agent/agent/utils"
+	"github.com/cihub/seelog"
 )
-
-var log = logger.ForModule("config")
 
 const (
 	// http://www.iana.org/assignments/service-names-port-numbers/service-names-port-numbers.xhtml?search=docker
-	DOCKER_RESERVED_PORT     = 2375
-	DOCKER_RESERVED_SSL_PORT = 2376
+	DockerReservedPort    = 2375
+	DockerReservedSSLPort = 2376
 
-	SSH_PORT = 22
+	SSHPort = 22
 
-	AGENT_INTROSPECTION_PORT = 51678
+	// AgentIntrospectionPort is used to serve the metadata about the agent and to query the tasks being managed by the agent.
+	AgentIntrospectionPort = 51678
 
-	DEFAULT_CLUSTER_NAME = "default"
+	// AgentCredentialsPort is used to serve the credentials for tasks.
+	AgentCredentialsPort = 51679
+
+	// DefaultClusterName is the name of the default cluster.
+	DefaultClusterName = "default"
+
+	// DefaultTaskCleanupWaitDuration specifies the default value for task cleanup duration. It is used to
+	// clean up task's containers.
+	DefaultTaskCleanupWaitDuration = 3 * time.Hour
+
+	// DefaultDockerStopTimeout specifies the value for container stop timeout duration
+	DefaultDockerStopTimeout = 30 * time.Second
+
+	// minimumTaskCleanupWaitDuration specifies the minimum duration to wait before cleaning up
+	// a task's container. This is used to enforce sane values for the config.TaskCleanupWaitDuration field.
+	minimumTaskCleanupWaitDuration = 1 * time.Minute
+
+	// minimumDockerStopTimeout specifies the minimum value for docker StopContainer API
+	minimumDockerStopTimeout = 1 * time.Second
+
+	// defaultAuditLogFile specifies the default audit log filename
+	defaultCredentialsAuditLogFile = "/log/audit.log"
 )
 
 // Merge merges two config files, preferring the ones on the left. Any nil or
@@ -91,12 +112,12 @@ func (cfg *Config) checkMissingAndDepreciated() error {
 			}
 			switch missingTag {
 			case "warn":
-				log.Warn("Configuration key not set", "key", cfgStructField.Field(i).Name)
+				seelog.Warnf("Configuration key not set, key: %v", cfgStructField.Field(i).Name)
 			case "fatal":
-				log.Crit("Configuration key not set", "key", cfgStructField.Field(i).Name)
+				seelog.Criticalf("Configuration key not set, key: %v", cfgStructField.Field(i).Name)
 				fatalFields = append(fatalFields, cfgStructField.Field(i).Name)
 			default:
-				log.Warn("Unexpected `missing` tag value", "tag", missingTag)
+				seelog.Warnf("Unexpected `missing` tag value, tag %v", missingTag)
 			}
 		} else {
 			// present
@@ -104,7 +125,7 @@ func (cfg *Config) checkMissingAndDepreciated() error {
 			if len(deprecatedTag) == 0 {
 				continue
 			}
-			log.Warn("Use of deprecated configuration key", "key", cfgStructField.Field(i).Name, "message", deprecatedTag)
+			seelog.Warnf("Use of deprecated configuration key, key: %v message: %v", cfgStructField.Field(i).Name, deprecatedTag)
 		}
 	}
 	if len(fatalFields) > 0 {
@@ -130,7 +151,7 @@ func (cfg *Config) trimWhitespace() {
 		}
 
 		if cfgField.Kind() != reflect.String {
-			log.Warn("Cannot trim non-string field", "type", cfgField.Kind().String(), "index", i)
+			seelog.Warnf("Cannot trim non-string field type %v index %v", cfgField.Kind().String(), i)
 			continue
 		}
 		str := cfgField.Interface().(string)
@@ -140,18 +161,21 @@ func (cfg *Config) trimWhitespace() {
 
 func DefaultConfig() Config {
 	return Config{
-		DockerEndpoint:          "unix:///var/run/docker.sock",
-		ReservedPorts:           []uint16{SSH_PORT, DOCKER_RESERVED_PORT, DOCKER_RESERVED_SSL_PORT, AGENT_INTROSPECTION_PORT},
-		ReservedPortsUDP:        []uint16{},
-		DataDir:                 "/data/",
-		DisableMetrics:          false,
-		DockerGraphPath:         "/var/lib/docker",
-		ReservedMemory:          0,
-		AvailableLoggingDrivers: []dockerclient.LoggingDriver{dockerclient.JsonFileDriver},
+		DockerEndpoint:              "unix:///var/run/docker.sock",
+		ReservedPorts:               []uint16{SSHPort, DockerReservedPort, DockerReservedSSLPort, AgentIntrospectionPort, AgentCredentialsPort},
+		ReservedPortsUDP:            []uint16{},
+		DataDir:                     "/data/",
+		DisableMetrics:              false,
+		ReservedMemory:              0,
+		AvailableLoggingDrivers:     []dockerclient.LoggingDriver{dockerclient.JsonFileDriver},
+		TaskCleanupWaitDuration:     DefaultTaskCleanupWaitDuration,
+		DockerStopTimeout:           DefaultDockerStopTimeout,
+		CredentialsAuditLogFile:     defaultCredentialsAuditLogFile,
+		CredentialsAuditLogDisabled: false,
 	}
 }
 
-func FileConfig() Config {
+func fileConfig() Config {
 	config_file := utils.DefaultIfBlank(os.Getenv("ECS_AGENT_CONFIG_FILE_PATH"), "/etc/ecs_container_agent/config.json")
 
 	file, err := os.Open(config_file)
@@ -160,7 +184,7 @@ func FileConfig() Config {
 	}
 	data, err := ioutil.ReadAll(file)
 	if err != nil {
-		log.Error("Unable to read config file", "err", err)
+		seelog.Errorf("Unable to read config file, err %v", err)
 		return Config{}
 	}
 	if strings.TrimSpace(string(data)) == "" {
@@ -171,7 +195,7 @@ func FileConfig() Config {
 	config := Config{}
 	err = json.Unmarshal(data, &config)
 	if err != nil {
-		log.Error("Error reading config json data", "err", err)
+		seelog.Errorf("Error reading config json data, err %v", err)
 	}
 
 	// Handle any deprecated keys correctly here
@@ -181,9 +205,9 @@ func FileConfig() Config {
 	return config
 }
 
-// EnvironmentConfig reads the given configs from the environment and attempts
+// environmentConfig reads the given configs from the environment and attempts
 // to convert them to the given type
-func EnvironmentConfig() Config {
+func environmentConfig() Config {
 	endpoint := os.Getenv("ECS_BACKEND_HOST")
 
 	clusterRef := os.Getenv("ECS_CLUSTER")
@@ -213,7 +237,7 @@ func EnvironmentConfig() Config {
 	// invalid parse
 	// Blank is not a warning; we have sane defaults
 	if err != io.EOF && err != nil {
-		log.Warn("Invalid format for \"ECS_RESERVED_PORTS\" environment variable; expected a JSON array like [1,2,3].", "err", err)
+		seelog.Warnf("Invalid format for \"ECS_RESERVED_PORTS\" environment variable; expected a JSON array like [1,2,3]. err %v", err)
 	}
 
 	reservedPortUDPEnv := os.Getenv("ECS_RESERVED_PORTS_UDP")
@@ -224,30 +248,25 @@ func EnvironmentConfig() Config {
 	// invalid parse
 	// Blank is not a warning; we have sane defaults
 	if err != io.EOF && err != nil {
-		log.Warn("Invalid format for \"ECS_RESERVED_PORTS_UDP\" environment variable; expected a JSON array like [1,2,3].", "err", err)
+		seelog.Warnf("Invalid format for \"ECS_RESERVED_PORTS_UDP\" environment variable; expected a JSON array like [1,2,3]. err %v", err)
 	}
 
 	updateDownloadDir := os.Getenv("ECS_UPDATE_DOWNLOAD_DIR")
 	updatesEnabled := utils.ParseBool(os.Getenv("ECS_UPDATES_ENABLED"), false)
 
 	disableMetrics := utils.ParseBool(os.Getenv("ECS_DISABLE_METRICS"), false)
-	dockerGraphPath := os.Getenv("ECS_DOCKER_GRAPHPATH")
 
-	reservedMemoryEnv := os.Getenv("ECS_RESERVED_MEMORY")
-	var reservedMemory64 uint64
-	var reservedMemory uint16
-	if reservedMemoryEnv == "" {
-		reservedMemory = 0
-	} else {
-		reservedMemory64, err = strconv.ParseUint(reservedMemoryEnv, 10, 16)
-		if err != nil {
-			log.Warn("Invalid format for \"ECS_RESERVED_MEMORY\" environment variable; expected unsigned integer.", "err", err)
-			reservedMemory = 0
-		} else {
-			reservedMemory = uint16(reservedMemory64)
-		}
+	reservedMemory := parseEnvVariableUint16("ECS_RESERVED_MEMORY")
+
+	var dockerStopTimeout time.Duration
+	parsedStopTimeout := parseEnvVariableDuration("ECS_CONTAINER_STOP_TIMEOUT")
+	if parsedStopTimeout >= minimumDockerStopTimeout {
+		dockerStopTimeout = parsedStopTimeout
+	} else if parsedStopTimeout != 0 {
+		seelog.Warnf("Discarded invalid value for docker stop timeout, parsed as: %v", parsedStopTimeout)
 	}
 
+	taskCleanupWaitDuration := parseEnvVariableDuration("ECS_ENGINE_TASK_CLEANUP_WAIT_DURATION")
 	availableLoggingDriversEnv := os.Getenv("ECS_AVAILABLE_LOGGING_DRIVERS")
 	loggingDriverDecoder := json.NewDecoder(strings.NewReader(availableLoggingDriversEnv))
 	var availableLoggingDrivers []dockerclient.LoggingDriver
@@ -256,40 +275,77 @@ func EnvironmentConfig() Config {
 	// invalid parse
 	// Blank is not a warning; we have sane defaults
 	if err != io.EOF && err != nil {
-		log.Warn("Invalid format for \"ECS_AVAILABLE_LOGGING_DRIVERS\" environment variable; expected a JSON array like [\"json-file\",\"syslog\"].", "err", err)
+		seelog.Warnf("Invalid format for \"ECS_AVAILABLE_LOGGING_DRIVERS\" environment variable; expected a JSON array like [\"json-file\",\"syslog\"]. err %v", err)
 	}
 
 	privilegedDisabled := utils.ParseBool(os.Getenv("ECS_DISABLE_PRIVILEGED"), false)
 	seLinuxCapable := utils.ParseBool(os.Getenv("ECS_SELINUX_CAPABLE"), false)
 	appArmorCapable := utils.ParseBool(os.Getenv("ECS_APPARMOR_CAPABLE"), false)
+	taskIAMRoleEnabled := utils.ParseBool(os.Getenv("ECS_ENABLE_TASK_IAM_ROLE"), false)
+
+	credentialsAuditLogFile := os.Getenv("ECS_AUDIT_LOGFILE")
+	credentialsAuditLogDisabled := utils.ParseBool(os.Getenv("ECS_AUDIT_LOGFILE_DISABLED"), false)
 
 	return Config{
-		Cluster:                 clusterRef,
-		APIEndpoint:             endpoint,
-		AWSRegion:               awsRegion,
-		DockerEndpoint:          dockerEndpoint,
-		ReservedPorts:           reservedPorts,
-		ReservedPortsUDP:        reservedPortsUDP,
-		DataDir:                 dataDir,
-		Checkpoint:              checkpoint,
-		EngineAuthType:          engineAuthType,
-		EngineAuthData:          NewSensitiveRawMessage([]byte(engineAuthData)),
-		UpdatesEnabled:          updatesEnabled,
-		UpdateDownloadDir:       updateDownloadDir,
-		DisableMetrics:          disableMetrics,
-		DockerGraphPath:         dockerGraphPath,
-		ReservedMemory:          reservedMemory,
-		AvailableLoggingDrivers: availableLoggingDrivers,
-		PrivilegedDisabled:      privilegedDisabled,
-		SELinuxCapable:          seLinuxCapable,
-		AppArmorCapable:         appArmorCapable,
+		Cluster:                     clusterRef,
+		APIEndpoint:                 endpoint,
+		AWSRegion:                   awsRegion,
+		DockerEndpoint:              dockerEndpoint,
+		ReservedPorts:               reservedPorts,
+		ReservedPortsUDP:            reservedPortsUDP,
+		DataDir:                     dataDir,
+		Checkpoint:                  checkpoint,
+		EngineAuthType:              engineAuthType,
+		EngineAuthData:              NewSensitiveRawMessage([]byte(engineAuthData)),
+		UpdatesEnabled:              updatesEnabled,
+		UpdateDownloadDir:           updateDownloadDir,
+		DisableMetrics:              disableMetrics,
+		ReservedMemory:              reservedMemory,
+		AvailableLoggingDrivers:     availableLoggingDrivers,
+		PrivilegedDisabled:          privilegedDisabled,
+		SELinuxCapable:              seLinuxCapable,
+		AppArmorCapable:             appArmorCapable,
+		TaskCleanupWaitDuration:     taskCleanupWaitDuration,
+		TaskIAMRoleEnabled:          taskIAMRoleEnabled,
+		DockerStopTimeout:           dockerStopTimeout,
+		CredentialsAuditLogFile:     credentialsAuditLogFile,
+		CredentialsAuditLogDisabled: credentialsAuditLogDisabled,
 	}
 }
 
-func EC2MetadataConfig(ec2client ec2.EC2MetadataClient) Config {
+func parseEnvVariableUint16(envVar string) uint16 {
+	envVal := os.Getenv(envVar)
+	var var16 uint16
+	if envVal != "" {
+		var64, err := strconv.ParseUint(envVal, 10, 16)
+		if err != nil {
+			seelog.Warnf("Invalid format for \""+envVar+"\" environment variable; expected unsigned integer. err %v", err)
+		} else {
+			var16 = uint16(var64)
+		}
+	}
+	return var16
+}
+
+func parseEnvVariableDuration(envVar string) time.Duration {
+	var duration time.Duration
+	envVal := os.Getenv(envVar)
+	if envVal == "" {
+		seelog.Debugf("Environment variable empty: %v", envVar)
+	} else {
+		var err error
+		duration, err = time.ParseDuration(envVal)
+		if err != nil {
+			seelog.Warnf("Could not parse duration value: %v for Environment Variable %v : %v", envVal, envVar, err)
+		}
+	}
+	return duration
+}
+
+func ec2MetadataConfig(ec2client ec2.EC2MetadataClient) Config {
 	iid, err := ec2client.InstanceIdentityDocument()
 	if err != nil {
-		log.Crit("Unable to communicate with EC2 Metadata service to infer region: " + err.Error())
+		seelog.Criticalf("Unable to communicate with EC2 Metadata service to infer region: %v", err.Error())
 		return Config{}
 	}
 	return Config{AWSRegion: iid.Region}
@@ -301,12 +357,12 @@ func EC2MetadataConfig(ec2client ec2.EC2MetadataClient) Config {
 // error is returned, however, if the config is incomplete in some way that is
 // considered fatal.
 func NewConfig(ec2client ec2.EC2MetadataClient) (config *Config, err error) {
-	ctmp := EnvironmentConfig() //Environment overrides all else
+	ctmp := environmentConfig() //Environment overrides all else
 	config = &ctmp
 	defer func() {
 		config.trimWhitespace()
-		err = config.validate()
 		config.Merge(DefaultConfig())
+		err = config.validate()
 	}()
 
 	if config.complete() {
@@ -314,11 +370,18 @@ func NewConfig(ec2client ec2.EC2MetadataClient) (config *Config, err error) {
 		return config, nil
 	}
 
-	config.Merge(FileConfig())
+	config.Merge(fileConfig())
 
 	if config.AWSRegion == "" {
 		// Get it from metadata only if we need to (network io)
-		config.Merge(EC2MetadataConfig(ec2client))
+		config.Merge(ec2MetadataConfig(ec2client))
+	}
+
+	// If a value has been set for taskCleanupWaitDuration and the value is less than the minimum allowed cleanup duration,
+	// print a warning and override it
+	if config.TaskCleanupWaitDuration < minimumTaskCleanupWaitDuration {
+		seelog.Warnf("Invalid value for task cleanup duration, will be overridden to %v, parsed value %v, minimum threshold %v", DefaultTaskCleanupWaitDuration.String(), config.TaskCleanupWaitDuration, minimumTaskCleanupWaitDuration)
+		config.TaskCleanupWaitDuration = DefaultTaskCleanupWaitDuration
 	}
 
 	return config, err
@@ -331,6 +394,9 @@ func (config *Config) validate() error {
 		return err
 	}
 
+	if config.DockerStopTimeout < minimumDockerStopTimeout {
+		return fmt.Errorf("Invalid negative DockerStopTimeout: %v", config.DockerStopTimeout.String())
+	}
 	var badDrivers []string
 	for _, driver := range config.AvailableLoggingDrivers {
 		_, ok := dockerclient.LoggingDriverMinimumVersion[driver]
@@ -348,5 +414,5 @@ func (config *Config) validate() error {
 // String returns a lossy string representation of the config suitable for human readable display.
 // Consequently, it *should not* return any sensitive information.
 func (config *Config) String() string {
-	return fmt.Sprintf("Cluster: %v, Region: %v, DataDir: %v, Checkpoint: %v, AuthType: %v, UpdatesEnabled: %v, DisableMetrics: %v, ReservedMem: %v", config.Cluster, config.AWSRegion, config.DataDir, config.Checkpoint, config.EngineAuthType, config.UpdatesEnabled, config.DisableMetrics, config.ReservedMemory)
+	return fmt.Sprintf("Cluster: %v, Region: %v, DataDir: %v, Checkpoint: %v, AuthType: %v, UpdatesEnabled: %v, DisableMetrics: %v, ReservedMem: %v, TaskCleanupWaitDuration: %v, DockerStopTimeout: %v", config.Cluster, config.AWSRegion, config.DataDir, config.Checkpoint, config.EngineAuthType, config.UpdatesEnabled, config.DisableMetrics, config.ReservedMemory, config.TaskCleanupWaitDuration, config.DockerStopTimeout)
 }

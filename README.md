@@ -2,7 +2,7 @@
 
 [![Build Status](https://travis-ci.org/aws/amazon-ecs-agent.svg?branch=master)](https://travis-ci.org/aws/amazon-ecs-agent)
 
-The Amazon ECS Container Agent is software developed for the [Amazon EC2 Container Service](http://aws.amazon.com/ecs/).
+The Amazon ECS Container Agent is software developed for Amazon EC2 Container Service ([Amazon ECS](http://aws.amazon.com/ecs/)).
 
 It runs on Container Instances and starts containers on behalf of Amazon ECS.
 
@@ -19,8 +19,6 @@ On the [Amazon Linux AMI](https://aws.amazon.com/amazon-linux-ami/), we provide 
 The Amazon ECS Container Agent may also be run in a Docker container on an EC2 Instance with a recent Docker version installed.
 A Docker image is available in our [Docker Hub Repository](https://registry.hub.docker.com/u/amazon/amazon-ecs-agent/).
 
-*Note: The below command should work on most AMIs, but the cgroup and execdriver path may differ in some cases*
-
 ```bash
 $ mkdir -p /var/log/ecs /etc/ecs /var/lib/ecs/data
 $ touch /etc/ecs/ecs.config
@@ -30,8 +28,6 @@ $ docker run --name ecs-agent \
     -v /var/log/ecs:/log \
     -v /var/lib/ecs/data:/data \
     -v /var/lib/docker:/var/lib/docker \
-    -v /sys/fs/cgroup:/sys/fs/cgroup:ro \
-    -v /var/run/docker/execdriver/native:/var/lib/docker/execdriver/native:ro \
     -p 127.0.0.1:51678:51678 \
     --env-file /etc/ecs/ecs.config \
     -e ECS_LOGFILE=/log/ecs-agent.log \
@@ -101,20 +97,21 @@ configure them as something other than the defaults.
 | `AWS_ACCESS_KEY_ID` | AKIDEXAMPLE             | The [Access Key](http://docs.aws.amazon.com/general/latest/gr/aws-security-credentials.html) used by the agent for all calls. | Taken from EC2 Instance Metadata |
 | `AWS_SECRET_ACCESS_KEY` | EXAMPLEKEY | The [Secret Key](http://docs.aws.amazon.com/general/latest/gr/aws-security-credentials.html) used by the agent for all calls. | Taken from EC2 Instance Metadata |
 | `DOCKER_HOST`   | unix:///var/run/docker.sock | Used to create a connection to the Docker daemon; behaves similarly to this environment variable as used by the Docker client. | unix:///var/run/docker.sock |
-| `ECS_LOGLEVEL`  | &lt;crit&gt; &#124; &lt;error&gt; &#124; &lt;warn&gt; &#124; &lt;info&gt; &#124; &lt;debug&gt; | What level to log at on stdout. | info |
-| `ECS_LOGFILE`   | /ecs-agent.log              | The path to output full debugging info to. If blank, no logs will be written to file. If set, logs at debug level (regardless of ECS\_LOGLEVEL) will be written to that file. | blank |
+| `ECS_LOGLEVEL`  | &lt;crit&gt; &#124; &lt;error&gt; &#124; &lt;warn&gt; &#124; &lt;info&gt; &#124; &lt;debug&gt; | The level of detail that should be logged | info |
+| `ECS_LOGFILE`   | /ecs-agent.log              | The location where logs should be written. Log level is controlled by `ECS_LOGLEVEL` | blank |
 | `ECS_CHECKPOINT`   | &lt;true &#124; false&gt; | Whether to checkpoint state to the DATADIR specified below | true if `ECS_DATADIR` is explicitly set to a non-empty value; false otherwise |
 | `ECS_DATADIR`      |   /data/                  | The container path where state is checkpointed for use across agent restarts. | /data/ |
 | `ECS_UPDATES_ENABLED` | &lt;true &#124; false&gt; | Whether to exit for an updater to apply updates when requested | false |
 | `ECS_UPDATE_DOWNLOAD_DIR` | /cache               | Where to place update tarballs within the container |  |
 | `ECS_DISABLE_METRICS`     | &lt;true &#124; false&gt;  | Whether to disable metrics gathering for tasks. | false |
-| `ECS_DOCKER_GRAPHPATH`   | /var/lib/docker | Used to create the path to the state file of containers launched. The state file is used to read utilization metrics of containers. | /var/lib/docker |
 | `AWS_SESSION_TOKEN` |                         | The [Session Token](http://docs.aws.amazon.com/STS/latest/UsingSTS/Welcome.html) used for temporary credentials. | Taken from EC2 Instance Metadata |
 | `ECS_RESERVED_MEMORY` | 32 | Memory, in MB, to reserve for use by things other than containers managed by ECS. | 0 |
 | `ECS_AVAILABLE_LOGGING_DRIVERS` | `["json-file","syslog"]` | Which logging drivers are available on the Container Instance. | `["json-file"]` |
 | `ECS_DISABLE_PRIVILEGED` | `true` | Whether launching privileged containers is disabled on the Container Instance. | `false` |
 | `ECS_SELINUX_CAPABLE` | `true` | Whether SELinux is available on the Container Instance. | `false` |
 | `ECS_APPARMOR_CAPABLE` | `true` | Whether AppArmor is available on the Container Instance. | `false` |
+| `ECS_ENGINE_TASK_CLEANUP_WAIT_DURATION` | 10m | Time to wait to delete containers for a stopped task. If set to less than 1 minute, the value will be ignored.  | 3h |
+| `ECS_CONTAINER_STOP_TIMEOUT` | 10m | Time to wait for the container exit normally before being forcibly killed. | 30s |
 
 ### Persistence
 

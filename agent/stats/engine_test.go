@@ -1,4 +1,4 @@
-// Copyright 2014-2015 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+// Copyright 2014-2016 Amazon.com, Inc. or its affiliates. All Rights Reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License"). You may
 // not use this file except in compliance with the License. A copy of the
@@ -23,6 +23,7 @@ import (
 	"github.com/aws/amazon-ecs-agent/agent/statemanager"
 	mock_resolver "github.com/aws/amazon-ecs-agent/agent/stats/resolver/mock"
 	"github.com/aws/amazon-ecs-agent/agent/tcs/model/ecstcs"
+	docker "github.com/fsouza/go-dockerclient"
 	"github.com/golang/mock/gomock"
 	"golang.org/x/net/context"
 )
@@ -52,6 +53,10 @@ func (engine *MockTaskEngine) AddTask(*api.Task) error {
 
 func (engine *MockTaskEngine) ListTasks() ([]*api.Task, error) {
 	return nil, nil
+}
+
+func (engine *MockTaskEngine) GetTaskByArn(arn string) (*api.Task, bool) {
+	return nil, false
 }
 
 func (engine *MockTaskEngine) UnmarshalJSON([]byte) error {
@@ -129,15 +134,16 @@ func validateMetricsMetadata(metadata *ecstcs.MetricsMetadata) error {
 
 func createFakeContainerStats() []*ContainerStats {
 	return []*ContainerStats{
-		createContainerStats(22400432, 1839104, parseNanoTime("2015-02-12T21:22:05.131117533Z")),
-		createContainerStats(116499979, 3649536, parseNanoTime("2015-02-12T21:22:05.232291187Z")),
+		&ContainerStats{22400432, 1839104, parseNanoTime("2015-02-12T21:22:05.131117533Z")},
+		&ContainerStats{116499979, 3649536, parseNanoTime("2015-02-12T21:22:05.232291187Z")},
 	}
 }
 
 func TestStatsEngineAddRemoveContainers(t *testing.T) {
-	mockCtrl := gomock.NewController(t)
-	defer mockCtrl.Finish()
-	resolver := mock_resolver.NewMockContainerMetadataResolver(mockCtrl)
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	resolver := mock_resolver.NewMockContainerMetadataResolver(ctrl)
+	mockDockerClient := ecsengine.NewMockDockerClient(ctrl)
 	t1 := &api.Task{Arn: "t1", Family: "f1"}
 	t2 := &api.Task{Arn: "t2", Family: "f2"}
 	t3 := &api.Task{Arn: "t3"}
@@ -147,9 +153,13 @@ func TestStatsEngineAddRemoveContainers(t *testing.T) {
 	resolver.EXPECT().ResolveTask("c4").AnyTimes().Return(nil, fmt.Errorf("unmapped container"))
 	resolver.EXPECT().ResolveTask("c5").AnyTimes().Return(t2, nil)
 	resolver.EXPECT().ResolveTask("c6").AnyTimes().Return(t3, nil)
+	mockStatsChannel := make(chan *docker.Stats)
+	defer close(mockStatsChannel)
+	mockDockerClient.EXPECT().Stats(gomock.Any(), gomock.Any()).Return(mockStatsChannel, nil).AnyTimes()
 
-	engine := NewDockerStatsEngine(&cfg)
+	engine := NewDockerStatsEngine(&cfg, nil)
 	engine.resolver = resolver
+	engine.client = mockDockerClient
 	engine.cluster = defaultCluster
 	engine.containerInstanceArn = defaultContainerInstance
 
@@ -176,9 +186,9 @@ func TestStatsEngineAddRemoveContainers(t *testing.T) {
 		t.Error("Container c2 not found in engine")
 	}
 
-	for _, cronContainer := range containers {
+	for _, statsContainer := range containers {
 		for _, fakeContainerStats := range createFakeContainerStats() {
-			cronContainer.statsQueue.Add(fakeContainerStats)
+			statsContainer.statsQueue.Add(fakeContainerStats)
 		}
 	}
 
@@ -267,19 +277,19 @@ func TestStatsEngineMetadataInStatsSets(t *testing.T) {
 	t1 := &api.Task{Arn: "t1", Family: "f1"}
 	resolver.EXPECT().ResolveTask("c1").AnyTimes().Return(t1, nil)
 
-	engine := NewDockerStatsEngine(&cfg)
+	engine := NewDockerStatsEngine(&cfg, nil)
 	engine.resolver = resolver
 	engine.cluster = defaultCluster
 	engine.containerInstanceArn = defaultContainerInstance
 	engine.addContainer("c1")
 	containerStats := []*ContainerStats{
-		createContainerStats(22400432, 1839104, parseNanoTime("2015-02-12T21:22:05.131117533Z")),
-		createContainerStats(116499979, 3649536, parseNanoTime("2015-02-12T21:22:05.232291187Z")),
+		&ContainerStats{22400432, 1839104, parseNanoTime("2015-02-12T21:22:05.131117533Z")},
+		&ContainerStats{116499979, 3649536, parseNanoTime("2015-02-12T21:22:05.232291187Z")},
 	}
 	containers, _ := engine.tasksToContainers["t1"]
-	for _, cronContainer := range containers {
+	for _, statsContainer := range containers {
 		for i := 0; i < 2; i++ {
-			cronContainer.statsQueue.Add(containerStats[i])
+			statsContainer.statsQueue.Add(containerStats[i])
 		}
 	}
 	metadata, taskMetrics, err := engine.GetInstanceMetrics()
@@ -309,7 +319,7 @@ func TestStatsEngineMetadataInStatsSets(t *testing.T) {
 }
 
 func TestStatsEngineInvalidTaskEngine(t *testing.T) {
-	statsEngine := NewDockerStatsEngine(&cfg)
+	statsEngine := NewDockerStatsEngine(&cfg, nil)
 	taskEngine := &MockTaskEngine{}
 	err := statsEngine.MustInit(taskEngine, "", "")
 	if err == nil {
@@ -318,7 +328,7 @@ func TestStatsEngineInvalidTaskEngine(t *testing.T) {
 }
 
 func TestStatsEngineUninitialized(t *testing.T) {
-	engine := NewDockerStatsEngine(&cfg)
+	engine := NewDockerStatsEngine(&cfg, nil)
 	engine.resolver = &DockerContainerMetadataResolver{}
 	engine.cluster = defaultCluster
 	engine.containerInstanceArn = defaultContainerInstance
@@ -334,7 +344,7 @@ func TestStatsEngineTerminalTask(t *testing.T) {
 	defer mockCtrl.Finish()
 	resolver := mock_resolver.NewMockContainerMetadataResolver(mockCtrl)
 	resolver.EXPECT().ResolveTask("c1").Return(&api.Task{Arn: "t1", KnownStatus: api.TaskStopped}, nil)
-	engine := NewDockerStatsEngine(&cfg)
+	engine := NewDockerStatsEngine(&cfg, nil)
 	engine.resolver = resolver
 
 	engine.addContainer("c1")
@@ -347,7 +357,7 @@ func TestStatsEngineTerminalTask(t *testing.T) {
 func TestStatsEngineClientErrorListingContainers(t *testing.T) {
 	mockCtrl := gomock.NewController(t)
 	defer mockCtrl.Finish()
-	engine := NewDockerStatsEngine(&cfg)
+	engine := NewDockerStatsEngine(&cfg, nil)
 	mockDockerClient := ecsengine.NewMockDockerClient(mockCtrl)
 	// Mock client will return error while listing images.
 	mockDockerClient.EXPECT().ListContainers(false).Return(ecsengine.ListContainersResponse{DockerIds: nil, Error: fmt.Errorf("could not list containers")})

@@ -1,4 +1,4 @@
-// Copyright 2014-2015 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+// Copyright 2014-2016 Amazon.com, Inc. or its affiliates. All Rights Reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License"). You may
 // not use this file except in compliance with the License. A copy of the
@@ -18,13 +18,13 @@ import (
 	"time"
 
 	"github.com/aws/amazon-ecs-agent/agent/api"
+	"github.com/aws/amazon-ecs-agent/agent/config"
 	"github.com/aws/amazon-ecs-agent/agent/engine/dependencygraph"
 	"github.com/aws/amazon-ecs-agent/agent/utils/ttime"
 	"github.com/cihub/seelog"
 )
 
 const (
-	taskStoppedDuration           = 3 * time.Hour
 	steadyStateTaskVerifyInterval = 10 * time.Minute
 )
 
@@ -78,8 +78,14 @@ type managedTask struct {
 	// case it's a user trying to debug it or in case we're fighting with another
 	// thing managing the container.
 	unexpectedStart sync.Once
+
+	_time     ttime.Time
+	_timeOnce sync.Once
 }
 
+// newManagedTask is a method on DockerTaskEngine to create a new managedTask.
+// This method must only be called when the engine.processTasks write lock is
+// already held.
 func (engine *DockerTaskEngine) newManagedTask(task *api.Task) *managedTask {
 	t := &managedTask{
 		Task:           task,
@@ -123,7 +129,7 @@ func (task *managedTask) overseeTask() {
 		for task.steadyState() {
 			llog.Debug("Task at steady state", "state", task.KnownStatus.String())
 			maxWait := make(chan bool, 1)
-			timer := ttime.After(steadyStateTaskVerifyInterval)
+			timer := task.time().After(steadyStateTaskVerifyInterval)
 			go func() {
 				<-timer
 				maxWait <- true
@@ -157,11 +163,15 @@ func (task *managedTask) overseeTask() {
 	// We only break out of the above if this task is known to be stopped. Do
 	// onetime cleanup here, including removing the task after a timeout
 	llog.Debug("Task has reached stopped. We're just waiting and removing containers now")
+	taskCredentialsId := task.GetCredentialsId()
+	if taskCredentialsId != "" {
+		task.engine.credentialsManager.RemoveCredentials(taskCredentialsId)
+	}
 	if task.StopSequenceNumber != 0 {
 		llog.Debug("Marking done for this sequence", "seqnum", task.StopSequenceNumber)
 		task.engine.taskStopGroup.Done(task.StopSequenceNumber)
 	}
-	task.cleanupTask()
+	task.cleanupTask(task.engine.cfg.TaskCleanupWaitDuration)
 }
 
 func (mtask *managedTask) emitCurrentStatus() {
@@ -227,6 +237,7 @@ func (mtask *managedTask) handleContainerChange(containerChange dockerContainerC
 		seelog.Infof("Redundant container state change for task %s: %s to %s, but already %s", mtask.Task, container, event.Status, container.KnownStatus)
 		return
 	}
+	currentKnownStatus := container.KnownStatus
 	container.KnownStatus = event.Status
 
 	if event.Error != nil {
@@ -234,14 +245,27 @@ func (mtask *managedTask) handleContainerChange(containerChange dockerContainerC
 			container.ApplyingError = api.NewNamedError(event.Error)
 		}
 		if event.Status == api.ContainerStopped {
-			// If we were trying to transition to stopped and had an error, we
-			// clearly can't just continue trying to transition it to stopped
-			// again and again... In this case, assume it's stopped (or close
-			// enough) and get on with it
-			// This actually happens a lot for the case of stopping something that was not running.
-			llog.Info("Error for 'docker stop' of container; assuming it's stopped anyways")
-			container.KnownStatus = api.ContainerStopped
-			container.DesiredStatus = api.ContainerStopped
+			// If we were trying to transition to stopped and had a timeout error
+			// from docker, reset the known status to the current status and return
+			// This ensures that we don't emit a containerstopped event; a
+			// terminal container event from docker event stream will instead be
+			// responsible for the transition. Alternatively, the steadyState check
+			// could also trigger the progress and have another go at stopping the
+			// container
+			if event.Error.ErrorName() == dockerTimeoutErrorName {
+				seelog.Infof("%s for 'docker stop' of container; ignoring state change;  task: %v, container: %v, error: %v", dockerTimeoutErrorName, mtask.Task, container, event.Error.Error())
+				container.KnownStatus = currentKnownStatus
+				return
+			} else {
+				// If we were trying to transition to stopped and had an error, we
+				// clearly can't just continue trying to transition it to stopped
+				// again and again... In this case, assume it's stopped (or close
+				// enough) and get on with it
+				// This actually happens a lot for the case of stopping something that was not running.
+				llog.Info("Error for 'docker stop' of container; assuming it's stopped anyways")
+				container.KnownStatus = api.ContainerStopped
+				container.DesiredStatus = api.ContainerStopped
+			}
 		} else if event.Status == api.ContainerPulled {
 			// Another special case; a failure to pull might not be fatal if e.g. the image already exists.
 			llog.Info("Error while pulling container; will try to run anyways", "err", event.Error)
@@ -273,7 +297,8 @@ func (mtask *managedTask) handleContainerChange(containerChange dockerContainerC
 }
 
 func (mtask *managedTask) steadyState() bool {
-	return mtask.KnownStatus == api.TaskRunning && mtask.KnownStatus >= mtask.DesiredStatus
+	taskKnownStatus := mtask.GetKnownStatus()
+	return taskKnownStatus == api.TaskRunning && taskKnownStatus >= mtask.DesiredStatus
 }
 
 // waitEvent waits for any event to occur. If the event is the passed in
@@ -375,7 +400,7 @@ func (task *managedTask) progressContainers() {
 			// Ack, really bad. We want it to stop but the containers don't think
 			// that's possible... let's just break out and hope for the best!
 			log.Crit("The state is so bad that we're just giving up on it")
-			task.SetKnownStatus(api.TaskStopped)
+			task.UpdateKnownStatusAndTime(api.TaskStopped)
 			task.engine.emitTaskEvent(task.Task, "TaskStateError: Agent could not progress task's state to stopped")
 		} else {
 			log.Crit("Moving task to stopped due to bad state", "task", task.Task)
@@ -394,7 +419,7 @@ func (task *managedTask) progressContainers() {
 			delete(transitionsMap, changedContainer)
 			log.Debug("Still waiting for", "map", transitionsMap)
 		}
-		if task.DesiredStatus.Terminal() || task.KnownStatus.Terminal() {
+		if task.DesiredStatus.Terminal() || task.GetKnownStatus().Terminal() {
 			allWaitingOnPulled := true
 			for _, desired := range transitionsMap {
 				if desired != api.ContainerPulled {
@@ -415,8 +440,24 @@ func (task *managedTask) progressContainers() {
 	task.UpdateStatus()
 }
 
-func (task *managedTask) cleanupTask() {
-	cleanupTime := ttime.After(task.KnownStatusTime.Add(taskStoppedDuration).Sub(ttime.Now()))
+func (task *managedTask) time() ttime.Time {
+	task._timeOnce.Do(func() {
+		if task._time == nil {
+			task._time = &ttime.DefaultTime{}
+		}
+	})
+	return task._time
+}
+
+func (task *managedTask) cleanupTask(taskStoppedDuration time.Duration) {
+	cleanupTimeDuration := task.GetKnownStatusTime().Add(taskStoppedDuration).Sub(ttime.Now())
+	// There is a potential deadlock here if cleanupTime is negative. Ignore the computed
+	// value in this case in favor of the default config value.
+	if cleanupTimeDuration < 0 {
+		log.Debug("Task Cleanup Duration is too short. Resetting to " + config.DefaultTaskCleanupWaitDuration.String())
+		cleanupTimeDuration = config.DefaultTaskCleanupWaitDuration
+	}
+	cleanupTime := task.time().After(cleanupTimeDuration)
 	cleanupTimeBool := make(chan bool)
 	go func() {
 		<-cleanupTime
@@ -427,12 +468,22 @@ func (task *managedTask) cleanupTask() {
 	}
 	log.Debug("Cleaning up task's containers and data", "task", task.Task)
 
-	// First make an attempt to cleanup resources
-	task.engine.sweepTask(task.Task)
-	task.engine.state.RemoveTask(task.Task)
+	// For the duration of this, simply discard any task events; this ensures the
+	// speedy processing of other events for other tasks
+	handleCleanupDone := make(chan struct{})
+	go func() {
+		task.engine.sweepTask(task.Task)
+		task.engine.state.RemoveTask(task.Task)
+		handleCleanupDone <- struct{}{}
+	}()
+	// discard events while the task is being removed from engine state
+	task.discardEventsUntil(handleCleanupDone)
+	log.Debug("Finished removing task data; removing from state no longer managing", "task", task.Task)
 	// Now remove ourselves from the global state and cleanup channels
+	go task.discardEventsUntil(handleCleanupDone) // keep discarding events until the taks is fully gone
 	task.engine.processTasks.Lock()
 	delete(task.engine.managedTasks, task.Arn)
+	handleCleanupDone <- struct{}{}
 	task.engine.processTasks.Unlock()
 	task.engine.saver.Save()
 
@@ -443,6 +494,17 @@ func (task *managedTask) cleanupTask() {
 
 	close(task.dockerMessages)
 	close(task.acsMessages)
+}
+
+func (task *managedTask) discardEventsUntil(done chan struct{}) {
+	for {
+		select {
+		case <-task.dockerMessages:
+		case <-task.acsMessages:
+		case <-done:
+			return
+		}
+	}
 }
 
 func (task *managedTask) discardPendingMessages() {

@@ -1,4 +1,4 @@
-// Copyright 2014-2015 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+// Copyright 2014-2016 Amazon.com, Inc. or its affiliates. All Rights Reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License"). You may
 // not use this file except in compliance with the License. A copy of the
@@ -14,11 +14,13 @@
 package stats
 
 import (
+	"fmt"
 	"math"
 	"regexp"
 	"time"
 
-	"github.com/docker/libcontainer"
+	"github.com/cihub/seelog"
+	docker "github.com/fsouza/go-dockerclient"
 )
 
 // networkStatsErrorPattern defines the pattern that is used to evaluate
@@ -30,28 +32,21 @@ func nan32() float32 {
 	return (float32)(math.NaN())
 }
 
-// toContainerStats returns a new object of the ContainerStats object from libcontainer stats.
-func toContainerStats(containerStats libcontainer.ContainerStats) *ContainerStats {
+// dockerStatsToContainerStats returns a new object of the ContainerStats object from docker stats.
+func dockerStatsToConatinerStats(dockerStats *docker.Stats) (*ContainerStats, error) {
 	// The length of PercpuUsage represents the number of cores in an instance.
-	numCores := uint64(len(containerStats.CgroupStats.CpuStats.CpuUsage.PercpuUsage))
-	cpuUsage := uint64(0)
-	if numCores > 0 {
-		cpuUsage = containerStats.CgroupStats.CpuStats.CpuUsage.TotalUsage / numCores
+	numCores := uint64(len(dockerStats.CPUStats.CPUUsage.PercpuUsage))
+	if numCores == 0 {
+		seelog.Debug("Invalid container statitistics reported, got number of cores = 0")
+		return nil, fmt.Errorf("Invalid container statistics reported")
 	}
+
+	cpuUsage := dockerStats.CPUStats.CPUUsage.TotalUsage / numCores
 	return &ContainerStats{
 		cpuUsage:    cpuUsage,
-		memoryUsage: containerStats.CgroupStats.MemoryStats.Usage,
-		timestamp:   time.Now(),
-	}
-}
-
-// createContainerStats returns a new object of the ContainerStats object.
-func createContainerStats(cpuTime uint64, memBytes uint64, ts time.Time) *ContainerStats {
-	return &ContainerStats{
-		cpuUsage:    cpuTime,
-		memoryUsage: memBytes,
-		timestamp:   ts,
-	}
+		memoryUsage: dockerStats.MemoryStats.Usage,
+		timestamp:   dockerStats.Read,
+	}, nil
 }
 
 // parseNanoTime returns the time object from a string formatted with RFC3339Nano layout.
@@ -65,7 +60,7 @@ func parseNanoTime(value string) time.Time {
 func isNetworkStatsError(err error) bool {
 	matched, mErr := regexp.MatchString(networkStatsErrorPattern, err.Error())
 	if mErr != nil {
-		log.Debug("Error matching string", "err", mErr)
+		seelog.Debugf("Error matching string: %v", mErr)
 		return false
 	}
 

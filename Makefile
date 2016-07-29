@@ -1,4 +1,4 @@
-# Copyright 2014-2015 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# Copyright 2014-2016 Amazon.com, Inc. or its affiliates. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License"). You
 # may not use this file except in compliance with the License. A copy of
@@ -24,13 +24,9 @@ gobuild:
 static:
 	./scripts/build
 
-# 'golang-base' builds a Go binary patched for CVE-2015-5739, CVE-2015-5740, and CVE-2015-5741
-golang-base:
-	@docker build -f scripts/dockerfiles/Dockerfile.golang -t "amazon/amazon-ecs-agent-build:golang" .
-
 # 'build-in-docker' builds the agent within a dockerfile and saves it to the ./out
 # directory
-build-in-docker: golang-base
+build-in-docker:
 	@docker build -f scripts/dockerfiles/Dockerfile.build -t "amazon/amazon-ecs-agent-build:make" .
 	@docker run --net=none -v "$(shell pwd)/out:/out" -v "$(shell pwd):/go/src/github.com/aws/amazon-ecs-agent" "amazon/amazon-ecs-agent-build:make"
 
@@ -43,7 +39,7 @@ docker: certs build-in-docker
 
 # 'docker-release' builds the agent from a clean snapshot of the git repo in
 # 'RELEASE' mode
-docker-release: golang-base
+docker-release:
 	@docker build -f scripts/dockerfiles/Dockerfile.cleanbuild -t "amazon/amazon-ecs-agent-cleanbuild:make" .
 	@docker run --net=none -v "$(shell pwd)/out:/out" -v "$(shell pwd):/src/amazon-ecs-agent" "amazon/amazon-ecs-agent-cleanbuild:make"
 
@@ -63,14 +59,14 @@ misc/certs/ca-certificates.crt:
 	docker run "amazon/amazon-ecs-agent-cert-source:make" cat /etc/ssl/certs/ca-certificates.crt > misc/certs/ca-certificates.crt
 
 short-test:
-	. ./scripts/shared_env && go test -short -timeout=25s ./agent/...
+	. ./scripts/shared_env && go test -short -timeout=25s $(shell go list ./agent/... | grep -v /vendor/)
 
 # Run our 'test' registry needed for integ and functional tests
 test-registry: netkitten volumes-test squid
 	@./scripts/setup-test-registry
 
 test: test-registry gremlin
-	. ./scripts/shared_env && go test -timeout=120s -v -cover ./...
+	. ./scripts/shared_env && go test -timeout=180s -v -cover $(shell go list ./agent/... | grep -v /vendor/)
 
 test-in-docker:
 	docker build -f scripts/dockerfiles/Dockerfile.test -t "amazon/amazon-ecs-agent-test:make" .
@@ -78,7 +74,7 @@ test-in-docker:
 	docker run -v "$(shell pwd):/go/src/github.com/aws/amazon-ecs-agent" --privileged "amazon/amazon-ecs-agent-test:make"
 
 run-functional-tests: test-registry
-	. ./scripts/shared_env && go test -tags functional -timeout=20m -v ./agent/functional_tests/...
+	. ./scripts/shared_env && go test -tags functional -timeout=30m -v ./agent/functional_tests/...
 
 netkitten:
 	cd misc/netkitten; $(MAKE) $(MFLAGS)

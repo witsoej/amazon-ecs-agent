@@ -1,4 +1,4 @@
-// Copyright 2014-2015 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+// Copyright 2014-2016 Amazon.com, Inc. or its affiliates. All Rights Reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License"). You may
 // not use this file except in compliance with the License. A copy of the
@@ -14,11 +14,11 @@
 package stats
 
 import (
+	"encoding/json"
 	"fmt"
 	"testing"
 
-	"github.com/docker/libcontainer"
-	"github.com/docker/libcontainer/cgroups"
+	docker "github.com/fsouza/go-dockerclient"
 )
 
 func TestIsNetworkStatsError(t *testing.T) {
@@ -35,18 +35,24 @@ func TestIsNetworkStatsError(t *testing.T) {
 	}
 }
 
-func TestToContainerStats_CpuUsage(t *testing.T) {
-	libcontainerStats := libcontainer.ContainerStats{
-		CgroupStats: &cgroups.Stats{
-			CpuStats: cgroups.CpuStats{
-				CpuUsage: cgroups.CpuUsage{
-					TotalUsage:  100,
-					PercpuUsage: []uint64{1, 2, 3, 4},
-				},
-			},
-		},
+func TestDockerStatsToContainerStatsCpuUsage(t *testing.T) {
+	// doing this with json makes me sad, but is the easiest way to deal with
+	// the inner structs
+	jsonStat := fmt.Sprintf(`
+		{
+			"cpu_stats":{
+				"cpu_usage":{
+					"percpu_usage":[%d, %d, %d, %d],
+					"total_usage":%d
+				}
+			}
+		}`, 1, 2, 3, 4, 100)
+	dockerStat := &docker.Stats{}
+	json.Unmarshal([]byte(jsonStat), dockerStat)
+	containerStats, err := dockerStatsToConatinerStats(dockerStat)
+	if err != nil {
+		t.Errorf("Error converting container stats: %v", err)
 	}
-	containerStats := toContainerStats(libcontainerStats)
 	if containerStats == nil {
 		t.Fatal("containerStats should not be nil")
 	}
@@ -55,21 +61,21 @@ func TestToContainerStats_CpuUsage(t *testing.T) {
 	}
 }
 
-func TestToContainerStats_NoDivideByZeroCoresPanic(t *testing.T) {
-	libcontainerStats := libcontainer.ContainerStats{
-		CgroupStats: &cgroups.Stats{
-			CpuStats: cgroups.CpuStats{
-				CpuUsage: cgroups.CpuUsage{
-					TotalUsage: 100,
-				},
-			},
-		},
-	}
-	containerStats := toContainerStats(libcontainerStats)
-	if containerStats == nil {
-		t.Fatal("containerStats should not be nil")
-	}
-	if containerStats.cpuUsage != 0 {
-		t.Error("Unexpected value for cpuUsage", containerStats.cpuUsage)
+func TestDockerStatsToContainerStatsZeroCoresGeneratesError(t *testing.T) {
+	// doing this with json makes me sad, but is the easiest way to deal with
+	// the inner structs
+	jsonStat := fmt.Sprintf(`
+		{
+			"cpu_stats":{
+				"cpu_usage":{
+					"total_usage":%d
+				}
+			}
+		}`, 100)
+	dockerStat := &docker.Stats{}
+	json.Unmarshal([]byte(jsonStat), dockerStat)
+	_, err := dockerStatsToConatinerStats(dockerStat)
+	if err == nil {
+		t.Error("Expected error converting container stats with empty PercpuUsage")
 	}
 }

@@ -24,7 +24,6 @@ import (
 	"github.com/aws/amazon-ecs-agent/agent/tcs/client"
 	"github.com/aws/amazon-ecs-agent/agent/tcs/model/ecstcs"
 	"github.com/aws/amazon-ecs-agent/agent/utils"
-	"github.com/aws/amazon-ecs-agent/agent/utils/ttime"
 	"github.com/aws/aws-sdk-go/aws/credentials"
 )
 
@@ -50,7 +49,7 @@ func StartMetricsSession(params TelemetrySessionParams) {
 	}
 
 	if !disabled {
-		statsEngine := stats.NewDockerStatsEngine(params.Cfg)
+		statsEngine := stats.NewDockerStatsEngine(params.Cfg, params.DockerClient)
 		err := statsEngine.MustInit(params.TaskEngine, params.Cfg.Cluster, params.ContainerInstanceArn)
 		if err != nil {
 			log.Warn("Error initializing metrics engine", "err", err)
@@ -78,7 +77,7 @@ func StartSession(params TelemetrySessionParams, statsEngine stats.Engine) error
 			backoff.Reset()
 		} else {
 			log.Info("Error from tcs; backing off", "err", tcsError)
-			ttime.Sleep(backoff.Duration())
+			params.time().Sleep(backoff.Duration())
 		}
 	}
 }

@@ -1,4 +1,4 @@
-// Copyright 2014-2015 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+// Copyright 2014-2016 Amazon.com, Inc. or its affiliates. All Rights Reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License"). You may
 // not use this file except in compliance with the License. A copy of the
@@ -16,13 +16,9 @@ package ecsacs
 import "github.com/aws/aws-sdk-go/aws/awsutil"
 
 type AccessDeniedException struct {
+	_ struct{} `type:"structure"`
+
 	Message *string `locationName:"message" type:"string"`
-
-	metadataAccessDeniedException `json:"-" xml:"-"`
-}
-
-type metadataAccessDeniedException struct {
-	SDKShapeTraits bool `type:"structure"`
 }
 
 // String returns the string representation
@@ -36,17 +32,13 @@ func (s AccessDeniedException) GoString() string {
 }
 
 type AckRequest struct {
+	_ struct{} `type:"structure"`
+
 	Cluster *string `locationName:"cluster" type:"string"`
 
 	ContainerInstance *string `locationName:"containerInstance" type:"string"`
 
 	MessageId *string `locationName:"messageId" type:"string"`
-
-	metadataAckRequest `json:"-" xml:"-"`
-}
-
-type metadataAckRequest struct {
-	SDKShapeTraits bool `type:"structure"`
 }
 
 // String returns the string representation
@@ -60,13 +52,9 @@ func (s AckRequest) GoString() string {
 }
 
 type BadRequestException struct {
+	_ struct{} `type:"structure"`
+
 	Message *string `locationName:"message" type:"string"`
-
-	metadataBadRequestException `json:"-" xml:"-"`
-}
-
-type metadataBadRequestException struct {
-	SDKShapeTraits bool `type:"structure"`
 }
 
 // String returns the string representation
@@ -80,13 +68,9 @@ func (s BadRequestException) GoString() string {
 }
 
 type CloseMessage struct {
+	_ struct{} `type:"structure"`
+
 	Message *string `locationName:"message" type:"string"`
-
-	metadataCloseMessage `json:"-" xml:"-"`
-}
-
-type metadataCloseMessage struct {
-	SDKShapeTraits bool `type:"structure"`
 }
 
 // String returns the string representation
@@ -100,6 +84,8 @@ func (s CloseMessage) GoString() string {
 }
 
 type Container struct {
+	_ struct{} `type:"structure"`
+
 	Command []*string `locationName:"command" type:"list"`
 
 	Cpu *int64 `locationName:"cpu" type:"integer"`
@@ -129,12 +115,6 @@ type Container struct {
 	RegistryAuthentication *RegistryAuthenticationData `locationName:"registryAuthentication" type:"structure"`
 
 	VolumesFrom []*VolumeFrom `locationName:"volumesFrom" type:"list"`
-
-	metadataContainer `json:"-" xml:"-"`
-}
-
-type metadataContainer struct {
-	SDKShapeTraits bool `type:"structure"`
 }
 
 // String returns the string representation
@@ -148,17 +128,13 @@ func (s Container) GoString() string {
 }
 
 type DockerConfig struct {
+	_ struct{} `type:"structure"`
+
 	Config *string `locationName:"config" type:"string"`
 
 	HostConfig *string `locationName:"hostConfig" type:"string"`
 
 	Version *string `locationName:"version" type:"string"`
-
-	metadataDockerConfig `json:"-" xml:"-"`
-}
-
-type metadataDockerConfig struct {
-	SDKShapeTraits bool `type:"structure"`
 }
 
 // String returns the string representation
@@ -172,17 +148,13 @@ func (s DockerConfig) GoString() string {
 }
 
 type ECRAuthData struct {
+	_ struct{} `type:"structure"`
+
 	EndpointOverride *string `locationName:"endpointOverride" type:"string"`
 
 	Region *string `locationName:"region" type:"string"`
 
 	RegistryId *string `locationName:"registryId" type:"string"`
-
-	metadataECRAuthData `json:"-" xml:"-"`
-}
-
-type metadataECRAuthData struct {
-	SDKShapeTraits bool `type:"structure"`
 }
 
 // String returns the string representation
@@ -196,13 +168,9 @@ func (s ECRAuthData) GoString() string {
 }
 
 type ErrorMessage struct {
+	_ struct{} `type:"structure"`
+
 	Message *string `locationName:"message" type:"string"`
-
-	metadataErrorMessage `json:"-" xml:"-"`
-}
-
-type metadataErrorMessage struct {
-	SDKShapeTraits bool `type:"structure"`
 }
 
 // String returns the string representation
@@ -216,11 +184,7 @@ func (s ErrorMessage) GoString() string {
 }
 
 type ErrorOutput struct {
-	metadataErrorOutput `json:"-" xml:"-"`
-}
-
-type metadataErrorOutput struct {
-	SDKShapeTraits bool `type:"structure"`
+	_ struct{} `type:"structure"`
 }
 
 // String returns the string representation
@@ -234,13 +198,9 @@ func (s ErrorOutput) GoString() string {
 }
 
 type HeartbeatMessage struct {
+	_ struct{} `type:"structure"`
+
 	Healthy *bool `locationName:"healthy" type:"boolean"`
-
-	metadataHeartbeatMessage `json:"-" xml:"-"`
-}
-
-type metadataHeartbeatMessage struct {
-	SDKShapeTraits bool `type:"structure"`
 }
 
 // String returns the string representation
@@ -254,11 +214,7 @@ func (s HeartbeatMessage) GoString() string {
 }
 
 type HeartbeatOutput struct {
-	metadataHeartbeatOutput `json:"-" xml:"-"`
-}
-
-type metadataHeartbeatOutput struct {
-	SDKShapeTraits bool `type:"structure"`
+	_ struct{} `type:"structure"`
 }
 
 // String returns the string representation
@@ -272,13 +228,9 @@ func (s HeartbeatOutput) GoString() string {
 }
 
 type HostVolumeProperties struct {
+	_ struct{} `type:"structure"`
+
 	SourcePath *string `locationName:"sourcePath" type:"string"`
-
-	metadataHostVolumeProperties `json:"-" xml:"-"`
-}
-
-type metadataHostVolumeProperties struct {
-	SDKShapeTraits bool `type:"structure"`
 }
 
 // String returns the string representation
@@ -291,14 +243,76 @@ func (s HostVolumeProperties) GoString() string {
 	return s.String()
 }
 
-type InactiveInstanceException struct {
-	Message *string `locationName:"message" type:"string"`
+type IAMRoleCredentials struct {
+	_ struct{} `type:"structure"`
 
-	metadataInactiveInstanceException `json:"-" xml:"-"`
+	AccessKeyId *string `locationName:"accessKeyId" type:"string"`
+
+	CredentialsId *string `locationName:"credentialsId" type:"string"`
+
+	Expiration *string `locationName:"expiration" type:"string"`
+
+	RoleArn *string `locationName:"roleArn" type:"string"`
+
+	SecretAccessKey *string `locationName:"secretAccessKey" type:"string"`
+
+	SessionToken *string `locationName:"sessionToken" type:"string"`
 }
 
-type metadataInactiveInstanceException struct {
-	SDKShapeTraits bool `type:"structure"`
+// String returns the string representation
+func (s IAMRoleCredentials) String() string {
+	return awsutil.Prettify(s)
+}
+
+// GoString returns the string representation
+func (s IAMRoleCredentials) GoString() string {
+	return s.String()
+}
+
+type IAMRoleCredentialsAckRequest struct {
+	_ struct{} `type:"structure"`
+
+	CredentialsId *string `locationName:"credentialsId" type:"string"`
+
+	Expiration *string `locationName:"expiration" type:"string"`
+
+	MessageId *string `locationName:"messageId" type:"string"`
+}
+
+// String returns the string representation
+func (s IAMRoleCredentialsAckRequest) String() string {
+	return awsutil.Prettify(s)
+}
+
+// GoString returns the string representation
+func (s IAMRoleCredentialsAckRequest) GoString() string {
+	return s.String()
+}
+
+type IAMRoleCredentialsMessage struct {
+	_ struct{} `type:"structure"`
+
+	MessageId *string `locationName:"messageId" type:"string"`
+
+	RoleCredentials *IAMRoleCredentials `locationName:"roleCredentials" type:"structure"`
+
+	TaskArn *string `locationName:"taskArn" type:"string"`
+}
+
+// String returns the string representation
+func (s IAMRoleCredentialsMessage) String() string {
+	return awsutil.Prettify(s)
+}
+
+// GoString returns the string representation
+func (s IAMRoleCredentialsMessage) GoString() string {
+	return s.String()
+}
+
+type InactiveInstanceException struct {
+	_ struct{} `type:"structure"`
+
+	Message *string `locationName:"message" type:"string"`
 }
 
 // String returns the string representation
@@ -312,13 +326,9 @@ func (s InactiveInstanceException) GoString() string {
 }
 
 type InvalidClusterException struct {
+	_ struct{} `type:"structure"`
+
 	Message *string `locationName:"message" type:"string"`
-
-	metadataInvalidClusterException `json:"-" xml:"-"`
-}
-
-type metadataInvalidClusterException struct {
-	SDKShapeTraits bool `type:"structure"`
 }
 
 // String returns the string representation
@@ -332,13 +342,9 @@ func (s InvalidClusterException) GoString() string {
 }
 
 type InvalidInstanceException struct {
+	_ struct{} `type:"structure"`
+
 	Message *string `locationName:"message" type:"string"`
-
-	metadataInvalidInstanceException `json:"-" xml:"-"`
-}
-
-type metadataInvalidInstanceException struct {
-	SDKShapeTraits bool `type:"structure"`
 }
 
 // String returns the string representation
@@ -352,17 +358,13 @@ func (s InvalidInstanceException) GoString() string {
 }
 
 type MountPoint struct {
+	_ struct{} `type:"structure"`
+
 	ContainerPath *string `locationName:"containerPath" type:"string"`
 
 	ReadOnly *bool `locationName:"readOnly" type:"boolean"`
 
 	SourceVolume *string `locationName:"sourceVolume" type:"string"`
-
-	metadataMountPoint `json:"-" xml:"-"`
-}
-
-type metadataMountPoint struct {
-	SDKShapeTraits bool `type:"structure"`
 }
 
 // String returns the string representation
@@ -376,6 +378,8 @@ func (s MountPoint) GoString() string {
 }
 
 type NackRequest struct {
+	_ struct{} `type:"structure"`
+
 	Cluster *string `locationName:"cluster" type:"string"`
 
 	ContainerInstance *string `locationName:"containerInstance" type:"string"`
@@ -383,12 +387,6 @@ type NackRequest struct {
 	MessageId *string `locationName:"messageId" type:"string"`
 
 	Reason *string `locationName:"reason" type:"string"`
-
-	metadataNackRequest `json:"-" xml:"-"`
-}
-
-type metadataNackRequest struct {
-	SDKShapeTraits bool `type:"structure"`
 }
 
 // String returns the string representation
@@ -402,6 +400,8 @@ func (s NackRequest) GoString() string {
 }
 
 type PayloadMessage struct {
+	_ struct{} `type:"structure"`
+
 	ClusterArn *string `locationName:"clusterArn" type:"string"`
 
 	ContainerInstanceArn *string `locationName:"containerInstanceArn" type:"string"`
@@ -413,12 +413,6 @@ type PayloadMessage struct {
 	SeqNum *int64 `locationName:"seqNum" type:"integer"`
 
 	Tasks []*Task `locationName:"tasks" type:"list"`
-
-	metadataPayloadMessage `json:"-" xml:"-"`
-}
-
-type metadataPayloadMessage struct {
-	SDKShapeTraits bool `type:"structure"`
 }
 
 // String returns the string representation
@@ -432,6 +426,8 @@ func (s PayloadMessage) GoString() string {
 }
 
 type PerformUpdateMessage struct {
+	_ struct{} `type:"structure"`
+
 	ClusterArn *string `locationName:"clusterArn" type:"string"`
 
 	ContainerInstanceArn *string `locationName:"containerInstanceArn" type:"string"`
@@ -439,12 +435,6 @@ type PerformUpdateMessage struct {
 	MessageId *string `locationName:"messageId" type:"string"`
 
 	UpdateInfo *UpdateInfo `locationName:"updateInfo" type:"structure"`
-
-	metadataPerformUpdateMessage `json:"-" xml:"-"`
-}
-
-type metadataPerformUpdateMessage struct {
-	SDKShapeTraits bool `type:"structure"`
 }
 
 // String returns the string representation
@@ -458,19 +448,17 @@ func (s PerformUpdateMessage) GoString() string {
 }
 
 type PollRequest struct {
+	_ struct{} `type:"structure"`
+
 	Cluster *string `locationName:"cluster" type:"string"`
 
 	ContainerInstance *string `locationName:"containerInstance" type:"string"`
 
+	SendCredentials *bool `locationName:"sendCredentials" type:"boolean"`
+
 	SeqNum *int64 `locationName:"seqNum" type:"integer"`
 
 	VersionInfo *VersionInfo `locationName:"versionInfo" type:"structure"`
-
-	metadataPollRequest `json:"-" xml:"-"`
-}
-
-type metadataPollRequest struct {
-	SDKShapeTraits bool `type:"structure"`
 }
 
 // String returns the string representation
@@ -484,17 +472,13 @@ func (s PollRequest) GoString() string {
 }
 
 type PortMapping struct {
+	_ struct{} `type:"structure"`
+
 	ContainerPort *int64 `locationName:"containerPort" type:"integer"`
 
 	HostPort *int64 `locationName:"hostPort" type:"integer"`
 
 	Protocol *string `locationName:"protocol" type:"string" enum:"TransportProtocol"`
-
-	metadataPortMapping `json:"-" xml:"-"`
-}
-
-type metadataPortMapping struct {
-	SDKShapeTraits bool `type:"structure"`
 }
 
 // String returns the string representation
@@ -508,15 +492,11 @@ func (s PortMapping) GoString() string {
 }
 
 type RegistryAuthenticationData struct {
+	_ struct{} `type:"structure"`
+
 	EcrAuthData *ECRAuthData `locationName:"ecrAuthData" type:"structure"`
 
 	Type *string `locationName:"type" type:"string" enum:"AuthenticationType"`
-
-	metadataRegistryAuthenticationData `json:"-" xml:"-"`
-}
-
-type metadataRegistryAuthenticationData struct {
-	SDKShapeTraits bool `type:"structure"`
 }
 
 // String returns the string representation
@@ -530,13 +510,9 @@ func (s RegistryAuthenticationData) GoString() string {
 }
 
 type ServerException struct {
+	_ struct{} `type:"structure"`
+
 	Message *string `locationName:"message" type:"string"`
-
-	metadataServerException `json:"-" xml:"-"`
-}
-
-type metadataServerException struct {
-	SDKShapeTraits bool `type:"structure"`
 }
 
 // String returns the string representation
@@ -550,6 +526,8 @@ func (s ServerException) GoString() string {
 }
 
 type StageUpdateMessage struct {
+	_ struct{} `type:"structure"`
+
 	ClusterArn *string `locationName:"clusterArn" type:"string"`
 
 	ContainerInstanceArn *string `locationName:"containerInstanceArn" type:"string"`
@@ -557,12 +535,6 @@ type StageUpdateMessage struct {
 	MessageId *string `locationName:"messageId" type:"string"`
 
 	UpdateInfo *UpdateInfo `locationName:"updateInfo" type:"structure"`
-
-	metadataStageUpdateMessage `json:"-" xml:"-"`
-}
-
-type metadataStageUpdateMessage struct {
-	SDKShapeTraits bool `type:"structure"`
 }
 
 // String returns the string representation
@@ -576,6 +548,8 @@ func (s StageUpdateMessage) GoString() string {
 }
 
 type Task struct {
+	_ struct{} `type:"structure"`
+
 	Arn *string `locationName:"arn" type:"string"`
 
 	Containers []*Container `locationName:"containers" type:"list"`
@@ -586,17 +560,13 @@ type Task struct {
 
 	Overrides *string `locationName:"overrides" type:"string"`
 
+	RoleCredentials *IAMRoleCredentials `locationName:"roleCredentials" type:"structure"`
+
 	TaskDefinitionAccountId *string `locationName:"taskDefinitionAccountId" type:"string"`
 
 	Version *string `locationName:"version" type:"string"`
 
 	Volumes []*Volume `locationName:"volumes" type:"list"`
-
-	metadataTask `json:"-" xml:"-"`
-}
-
-type metadataTask struct {
-	SDKShapeTraits bool `type:"structure"`
 }
 
 // String returns the string representation
@@ -610,11 +580,7 @@ func (s Task) GoString() string {
 }
 
 type UpdateFailureOutput struct {
-	metadataUpdateFailureOutput `json:"-" xml:"-"`
-}
-
-type metadataUpdateFailureOutput struct {
-	SDKShapeTraits bool `type:"structure"`
+	_ struct{} `type:"structure"`
 }
 
 // String returns the string representation
@@ -628,15 +594,11 @@ func (s UpdateFailureOutput) GoString() string {
 }
 
 type UpdateInfo struct {
+	_ struct{} `type:"structure"`
+
 	Location *string `locationName:"location" type:"string"`
 
 	Signature *string `locationName:"signature" type:"string"`
-
-	metadataUpdateInfo `json:"-" xml:"-"`
-}
-
-type metadataUpdateInfo struct {
-	SDKShapeTraits bool `type:"structure"`
 }
 
 // String returns the string representation
@@ -650,17 +612,13 @@ func (s UpdateInfo) GoString() string {
 }
 
 type VersionInfo struct {
+	_ struct{} `type:"structure"`
+
 	AgentHash *string `locationName:"agentHash" type:"string"`
 
 	AgentVersion *string `locationName:"agentVersion" type:"string"`
 
 	DockerVersion *string `locationName:"dockerVersion" type:"string"`
-
-	metadataVersionInfo `json:"-" xml:"-"`
-}
-
-type metadataVersionInfo struct {
-	SDKShapeTraits bool `type:"structure"`
 }
 
 // String returns the string representation
@@ -674,15 +632,11 @@ func (s VersionInfo) GoString() string {
 }
 
 type Volume struct {
+	_ struct{} `type:"structure"`
+
 	Host *HostVolumeProperties `locationName:"host" type:"structure"`
 
 	Name *string `locationName:"name" type:"string"`
-
-	metadataVolume `json:"-" xml:"-"`
-}
-
-type metadataVolume struct {
-	SDKShapeTraits bool `type:"structure"`
 }
 
 // String returns the string representation
@@ -696,15 +650,11 @@ func (s Volume) GoString() string {
 }
 
 type VolumeFrom struct {
+	_ struct{} `type:"structure"`
+
 	ReadOnly *bool `locationName:"readOnly" type:"boolean"`
 
 	SourceContainer *string `locationName:"sourceContainer" type:"string"`
-
-	metadataVolumeFrom `json:"-" xml:"-"`
-}
-
-type metadataVolumeFrom struct {
-	SDKShapeTraits bool `type:"structure"`
 }
 
 // String returns the string representation

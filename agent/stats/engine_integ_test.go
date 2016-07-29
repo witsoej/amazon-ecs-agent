@@ -1,4 +1,4 @@
-// Copyright 2014-2015 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+// Copyright 2014-2016 Amazon.com, Inc. or its affiliates. All Rights Reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License"). You may
 // not use this file except in compliance with the License. A copy of the
@@ -22,6 +22,7 @@ import (
 	"github.com/aws/amazon-ecs-agent/agent/api"
 	"github.com/aws/amazon-ecs-agent/agent/config"
 	"github.com/aws/amazon-ecs-agent/agent/engine"
+	"github.com/aws/amazon-ecs-agent/agent/engine/dockerclient"
 	"github.com/aws/amazon-ecs-agent/agent/utils"
 	docker "github.com/fsouza/go-dockerclient"
 )
@@ -45,12 +46,14 @@ const (
 var endpoint = utils.DefaultIfBlank(os.Getenv(engine.DOCKER_ENDPOINT_ENV_VARIABLE), engine.DOCKER_DEFAULT_ENDPOINT)
 
 var client, _ = docker.NewClient(endpoint)
-
+var clientFactory = dockerclient.NewFactory(endpoint)
 var cfg = config.DefaultConfig()
 
+var dockerClient engine.DockerClient
+
 func init() {
-	// Set DockerGraphPath as per changes in 1.6
-	cfg.DockerGraphPath = "/var/run/docker"
+	cfg.EngineAuthData = config.NewSensitiveRawMessage([]byte{})
+	dockerClient, _ = engine.NewDockerGoClient(clientFactory, false, &cfg)
 }
 
 // createGremlin creates the gremlin container using the docker client.
@@ -103,14 +106,10 @@ func (resolver *IntegContainerMetadataResolver) addToMap(containerID string) {
 }
 
 func TestStatsEngineWithExistingContainers(t *testing.T) {
-	// This should be a functional test. Upgrading to docker 1.6 breaks our ability to
-	// read state.json file for containers.
-	t.Skip("Skipping integ test as this is really a functional test")
-	engine := NewDockerStatsEngine(&cfg)
-	err := engine.initDockerClient()
-	if err != nil {
-		t.Error("Error initializing stats engine: ", err)
+	if testing.Short() {
+		t.Skip("Skipping integ test in short mode")
 	}
+	engine := NewDockerStatsEngine(&cfg, dockerClient)
 
 	// Create a container to get the container id.
 	container, err := createGremlin(client)
@@ -145,6 +144,7 @@ func TestStatsEngineWithExistingContainers(t *testing.T) {
 	if err != nil {
 		t.Error("Error initializing stats engine: ", err)
 	}
+	defer engine.unsubscribeContainerEvents()
 
 	// Wait for the stats collection go routine to start.
 	time.Sleep(checkPointSleep)
@@ -159,7 +159,7 @@ func TestStatsEngineWithExistingContainers(t *testing.T) {
 	}
 
 	if len(taskMetrics) != 1 {
-		t.Error("Incorrect number of tasks. Expected: 1, got: ", len(taskMetrics))
+		t.Fatal("Incorrect number of tasks. Expected: 1, got: ", len(taskMetrics))
 	}
 
 	taskMetric := taskMetrics[0]
@@ -184,19 +184,16 @@ func TestStatsEngineWithExistingContainers(t *testing.T) {
 	// Should not contain any metrics after cleanup.
 	err = validateIdleContainerMetrics(engine)
 	if err != nil {
-		t.Fatal("Error validating metadata: ", err)
+		t.Fatal("Error validating idle metrics: ", err)
 	}
 }
 
 func TestStatsEngineWithNewContainers(t *testing.T) {
-	// This should be a functional test. Upgrading to docker 1.6 breaks our ability to
-	// read state.json file for containers.
-	t.Skip("Skipping integ test as this is really a functional test")
-	engine := NewDockerStatsEngine(&cfg)
-	err := engine.initDockerClient()
-	if err != nil {
-		t.Error("Error initializing stats engine: ", err)
+	if testing.Short() {
+		t.Skip("Skipping integ test in short mode")
 	}
+	engine := NewDockerStatsEngine(&cfg, dockerClient)
+
 	container, err := createGremlin(client)
 	if err != nil {
 		t.Fatal("Error creating container", err)
@@ -212,13 +209,16 @@ func TestStatsEngineWithNewContainers(t *testing.T) {
 	resolver.addToMap(container.ID)
 
 	// Wait for containers from previous tests to transition states.
-	time.Sleep(checkPointSleep)
+	time.Sleep(checkPointSleep * 2)
 	engine.resolver = resolver
+	engine.cluster = defaultCluster
+	engine.containerInstanceArn = defaultContainerInstance
 
 	err = engine.Init()
 	if err != nil {
 		t.Error("Error initializing stats engine: ", err)
 	}
+	defer engine.unsubscribeContainerEvents()
 
 	err = client.StartContainer(container.ID, nil)
 	defer client.StopContainer(container.ID, defaultDockerTimeoutSeconds)
@@ -240,7 +240,7 @@ func TestStatsEngineWithNewContainers(t *testing.T) {
 	}
 
 	if len(taskMetrics) != 1 {
-		t.Error("Incorrect number of tasks. Expected: 1, got: ", len(taskMetrics))
+		t.Fatal("Incorrect number of tasks. Expected: 1, got: ", len(taskMetrics))
 	}
 	taskMetric := taskMetrics[0]
 	if *taskMetric.TaskDefinitionFamily != taskDefinitionFamily {
@@ -265,15 +265,15 @@ func TestStatsEngineWithNewContainers(t *testing.T) {
 	// Should not contain any metrics after cleanup.
 	err = validateIdleContainerMetrics(engine)
 	if err != nil {
-		t.Fatal("Error validating metadata: ", err)
+		t.Fatal("Error validating idle metrics: ", err)
 	}
 }
 
 func TestStatsEngineWithDockerTaskEngine(t *testing.T) {
-	// This should be a functional test. Upgrading to docker 1.6 breaks our ability to
-	// read state.json file for containers.
-	t.Skip("Skipping integ test as this is really a functional test")
-	taskEngine := engine.NewTaskEngine(&config.Config{}, false)
+	if testing.Short() {
+		t.Skip("Skipping integ test in short mode")
+	}
+	taskEngine := engine.NewTaskEngine(&config.Config{}, nil, nil)
 	container, err := createGremlin(client)
 	if err != nil {
 		t.Fatal("Error creating container", err)
@@ -313,15 +313,12 @@ func TestStatsEngineWithDockerTaskEngine(t *testing.T) {
 			Container:  containers[0],
 		},
 		&testTask)
-	statsEngine := NewDockerStatsEngine(&cfg)
-	statsEngine.client, err = engine.NewDockerGoClient(nil, "", config.NewSensitiveRawMessage([]byte("")), false)
-	if err != nil {
-		t.Fatal("Error initializing docker client: ", err)
-	}
+	statsEngine := NewDockerStatsEngine(&cfg, dockerClient)
 	err = statsEngine.MustInit(taskEngine, defaultCluster, defaultContainerInstance)
 	if err != nil {
 		t.Error("Error initializing stats engine: ", err)
 	}
+	defer statsEngine.unsubscribeContainerEvents()
 
 	err = client.StartContainer(container.ID, nil)
 	defer client.StopContainer(container.ID, defaultDockerTimeoutSeconds)
@@ -366,6 +363,6 @@ func TestStatsEngineWithDockerTaskEngine(t *testing.T) {
 	// Should not contain any metrics after cleanup.
 	err = validateIdleContainerMetrics(statsEngine)
 	if err != nil {
-		t.Fatal("Error validating metadata: ", err)
+		t.Fatal("Error validating idle metrics: ", err)
 	}
 }

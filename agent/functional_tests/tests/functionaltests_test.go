@@ -28,7 +28,18 @@ import (
 
 	"github.com/aws/amazon-ecs-agent/agent/ecs_client/model/ecs"
 	. "github.com/aws/amazon-ecs-agent/agent/functional_tests/util"
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/session"
+	"github.com/aws/aws-sdk-go/service/cloudwatch"
+	"github.com/aws/aws-sdk-go/service/cloudwatchlogs"
 	docker "github.com/fsouza/go-dockerclient"
+	"github.com/pborman/uuid"
+)
+
+const (
+	waitTaskStateChangeDuration     = 2 * time.Minute
+	waitMetricsInCloudwatchDuration = 4 * time.Minute
+	awslogsLogGroupName             = "ecs-functional-tests"
 )
 
 // TestRunManyTasks runs several tasks in short succession and expects them to
@@ -91,6 +102,65 @@ func TestOOMContainer(t *testing.T) {
 	}
 	if err = testTask.ExpectErrorType("error", "OutOfMemoryError", 1*time.Minute); err != nil {
 		t.Error(err)
+	}
+}
+
+// This test addresses a deadlock issue which was noted in GH:313 and fixed
+// in GH:320. It runs a service with 10 containers, waits for cleanup, starts
+// another two instances of that service and ensures that those tasks complete.
+func TestTaskCleanupDoesNotDeadlock(t *testing.T) {
+	// Set the ECS_ENGINE_TASK_CLEANUP_WAIT_DURATION to its lowest permissible value
+	os.Setenv("ECS_ENGINE_TASK_CLEANUP_WAIT_DURATION", "60s")
+	defer os.Unsetenv("ECS_ENGINE_TASK_CLEANUP_WAIT_DURATION")
+
+	agent := RunAgent(t, nil)
+	defer agent.Cleanup()
+
+	// This bug was fixed in v1.8.1
+	agent.RequireVersion(">=1.8.1")
+
+	// Run two Tasks after cleanup, as the deadlock does not consistently occur after
+	// after just one task cleanup cycle.
+	for i := 0; i < 3; i++ {
+
+		// Start a task with ten containers
+		testTask, err := agent.StartTask(t, "ten-containers")
+		if err != nil {
+			t.Fatalf("Cycle %d: There was an error starting the Task: %v", i, err)
+		}
+
+		isTaskRunning, err := agent.WaitRunningViaIntrospection(testTask)
+		if err != nil || !isTaskRunning {
+			t.Fatalf("Cycle %d: Task should be RUNNING but is not: %v", i, err)
+		}
+
+		// Get the dockerID so we can later check that the container has been cleaned up.
+		dockerId, err := agent.ResolveTaskDockerID(testTask, "1")
+		if err != nil {
+			t.Fatalf("Cycle %d: Error resolving docker id for container in task: %v", i, err)
+		}
+
+		// 2 minutes should be enough for the Task to have completed. If the task has not
+		// completed and is in PENDING, the agent is most likely deadlocked.
+		err = testTask.WaitStopped(2 * time.Minute)
+		if err != nil {
+			t.Fatalf("Cycle %d: Task did not transition into to STOPPED in time: %v", i, err)
+		}
+
+		isTaskStopped, err := agent.WaitStoppedViaIntrospection(testTask)
+		if err != nil || !isTaskStopped {
+			t.Fatalf("Cycle %d: Task should be STOPPED but is not: %v", i, err)
+		}
+
+		// Wait for the tasks to be cleaned up
+		time.Sleep(90 * time.Second)
+
+		// Ensure that tasks are cleaned up. WWe should not be able to describe the
+		// container now since it has been cleaned up.
+		_, err = agent.DockerClient.InspectContainer(dockerId)
+		if err == nil {
+			t.Fatalf("Cycle %d: Expected error inspecting container in task.", i)
+		}
 	}
 }
 
@@ -308,7 +378,7 @@ func TestDockerAuth(t *testing.T) {
 
 func TestSquidProxy(t *testing.T) {
 	// Run a squid proxy manually, verify that the agent can connect through it
-	client, err := docker.NewClientFromEnv()
+	client, err := docker.NewVersionedClientFromEnv("1.17")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -427,5 +497,225 @@ func TestSquidProxy(t *testing.T) {
 
 	if len(dedupedMatches) < 3 {
 		t.Errorf("Expected 3 matches, actually had %d matches: %+v", len(dedupedMatches), dedupedMatches)
+	}
+}
+
+// TestAwslogsDriver verifies that container logs are sent to Amazon CloudWatch Logs with awslogs as the log driver
+func TestAwslogsDriver(t *testing.T) {
+	RequireDockerVersion(t, ">=1.9.0") // awslogs drivers available from docker 1.9.0
+	cwlClient := cloudwatchlogs.New(session.New(), aws.NewConfig().WithRegion(*ECS.Config.Region))
+	// Test whether the log group existed or not
+	respDescribeLogGroups, err := cwlClient.DescribeLogGroups(&cloudwatchlogs.DescribeLogGroupsInput{
+		LogGroupNamePrefix: aws.String(awslogsLogGroupName),
+	})
+	if err != nil {
+		t.Fatalf("CloudWatchLogs describe log groups error: %v", err)
+	}
+	logGroupExists := false
+	for i := 0; i < len(respDescribeLogGroups.LogGroups); i++ {
+		if *respDescribeLogGroups.LogGroups[i].LogGroupName == awslogsLogGroupName {
+			logGroupExists = true
+			break
+		}
+	}
+
+	if !logGroupExists {
+		_, err := cwlClient.CreateLogGroup(&cloudwatchlogs.CreateLogGroupInput{
+			LogGroupName: aws.String(awslogsLogGroupName),
+		})
+		if err != nil {
+			t.Fatalf("Failed to create log group %s : %v", awslogsLogGroupName, err)
+		}
+	}
+
+	agentOptions := AgentOptions{
+		ExtraEnvironment: map[string]string{
+			"ECS_AVAILABLE_LOGGING_DRIVERS": `["awslogs"]`,
+		},
+	}
+	agent := RunAgent(t, &agentOptions)
+	defer agent.Cleanup()
+	agent.RequireVersion(">=1.9.0") //Required for awslogs driver
+
+	testTask, err := agent.StartTask(t, "awslogs")
+	if err != nil {
+		t.Fatalf("Expected to start task using awslogs driver failed: %v", err)
+	}
+
+	// Wait for the container to start
+	testTask.WaitRunning(waitTaskStateChangeDuration)
+	containerId, err := agent.ResolveTaskDockerID(testTask, "awslogs")
+	if err != nil {
+		t.Fatalf("Failed to get the container ID")
+	}
+	// Delete the log stream after the test
+	defer func() {
+		cwlClient.DeleteLogStream(&cloudwatchlogs.DeleteLogStreamInput{
+			LogGroupName:  aws.String(awslogsLogGroupName),
+			LogStreamName: aws.String(containerId),
+		})
+	}()
+
+	params := &cloudwatchlogs.GetLogEventsInput{
+		LogGroupName:  aws.String(awslogsLogGroupName),
+		LogStreamName: aws.String(containerId),
+	}
+	resp, err := cwlClient.GetLogEvents(params)
+	if err != nil {
+		t.Fatalf("CloudWatchLogs get log failed: %v", err)
+	}
+
+	if len(resp.Events) != 1 {
+		t.Errorf("Get unexpected number of log events: %d", len(resp.Events))
+	} else if *resp.Events[0].Message != "hello world" {
+		t.Errorf("Got log events message unexpected: %s", *resp.Events[0].Message)
+	}
+}
+
+func TestTaskCleanup(t *testing.T) {
+	// Set the task cleanup time to just over a minute.
+	os.Setenv("ECS_ENGINE_TASK_CLEANUP_WAIT_DURATION", "70s")
+	agent := RunAgent(t, nil)
+	defer func() {
+		agent.Cleanup()
+		os.Unsetenv("ECS_ENGINE_TASK_CLEANUP_WAIT_DURATION")
+	}()
+
+	// Start a task and get the container id once the task transitions to RUNNING.
+	task, err := agent.StartTask(t, "nginx")
+	if err != nil {
+		t.Fatalf("Error starting task: %v", err)
+	}
+
+	err = task.WaitRunning(2 * time.Minute)
+	if err != nil {
+		t.Fatalf("Error waiting for running task: %v", err)
+	}
+
+	dockerId, err := agent.ResolveTaskDockerID(task, "nginx")
+	if err != nil {
+		t.Fatalf("Error resolving docker id for container in task: %v", err)
+	}
+
+	// We should be able to inspect the container ID from docker at this point.
+	_, err = agent.DockerClient.InspectContainer(dockerId)
+	if err != nil {
+		t.Fatalf("Error inspecting container in task: %v", err)
+	}
+
+	// Stop the task and sleep for 2 minutes to let the task be cleaned up.
+	err = agent.DockerClient.StopContainer(dockerId, 1)
+	if err != nil {
+		t.Fatalf("Error stoppping task: %v", err)
+	}
+
+	err = task.WaitStopped(1 * time.Minute)
+	if err != nil {
+		t.Fatalf("Error waiting for task stopped: %v", err)
+	}
+
+	time.Sleep(2 * time.Minute)
+
+	// We should not be able to describe the container now since it has been cleaned up.
+	_, err = agent.DockerClient.InspectContainer(dockerId)
+	if err == nil {
+		t.Fatalf("Expected error inspecting container in task")
+	}
+}
+
+// TestTelemetry tests whether agent can send metrics to TACS
+func TestTelemetry(t *testing.T) {
+	// Try to use a new cluster for this test, ensure no other task metrics for this cluster
+	newClusterName := "ecstest-telemetry-" + uuid.New()
+	_, err := ECS.CreateCluster(&ecs.CreateClusterInput{
+		ClusterName: aws.String(newClusterName),
+	})
+	if err != nil {
+		t.Fatalf("Failed to create cluster %s : %v", newClusterName, err)
+	}
+	defer DeleteCluster(t, newClusterName)
+
+	agentOptions := AgentOptions{
+		ExtraEnvironment: map[string]string{
+			"ECS_CLUSTER": newClusterName,
+		},
+	}
+	agent := RunAgent(t, &agentOptions)
+	defer agent.Cleanup()
+
+	params := &cloudwatch.GetMetricStatisticsInput{
+		MetricName: aws.String("CPUUtilization"),
+		Namespace:  aws.String("AWS/ECS"),
+		Period:     aws.Int64(60),
+		Statistics: []*string{
+			aws.String("Average"),
+			aws.String("SampleCount"),
+		},
+		Dimensions: []*cloudwatch.Dimension{
+			{
+				Name:  aws.String("ClusterName"),
+				Value: aws.String(newClusterName),
+			},
+		},
+	}
+	params.StartTime = aws.Time(RoundTimeUp(time.Now(), time.Minute).UTC())
+	params.EndTime = aws.Time((*params.StartTime).Add(waitMetricsInCloudwatchDuration).UTC())
+	// wait for the agent start and ensure no task is running
+	time.Sleep(waitMetricsInCloudwatchDuration)
+
+	cwclient := cloudwatch.New(session.New(), aws.NewConfig().WithRegion(*ECS.Config.Region))
+	if err = VerifyMetrics(cwclient, params, true); err != nil {
+		t.Errorf("Before task running, verify metrics for CPU utilization failed: %v", err)
+	}
+
+	params.MetricName = aws.String("MemoryUtilization")
+	if err = VerifyMetrics(cwclient, params, true); err != nil {
+		t.Errorf("Before task running, verify metrics for memory utilization failed: %v", err)
+	}
+
+	testTask, err := agent.StartTask(t, "telemetry")
+	if err != nil {
+		t.Fatalf("Expected to start telemetry task: %v", err)
+	}
+	// Wait for the task to run and the agent to send back metrics
+	err = testTask.WaitRunning(waitTaskStateChangeDuration)
+	if err != nil {
+		t.Fatalf("Error start telemetry task: %v", err)
+	}
+
+	time.Sleep(waitMetricsInCloudwatchDuration)
+	params.EndTime = aws.Time(RoundTimeUp(time.Now(), time.Minute).UTC())
+	params.StartTime = aws.Time((*params.EndTime).Add(-waitMetricsInCloudwatchDuration).UTC())
+	params.MetricName = aws.String("CPUUtilization")
+	if err = VerifyMetrics(cwclient, params, false); err != nil {
+		t.Errorf("Task is running, verify metrics for CPU utilization failed: %v", err)
+	}
+
+	params.MetricName = aws.String("MemoryUtilization")
+	if err = VerifyMetrics(cwclient, params, false); err != nil {
+		t.Errorf("Task is running, verify metrics for memory utilization failed: %v", err)
+	}
+
+	err = testTask.Stop()
+	if err != nil {
+		t.Fatalf("Failed to stop the telemetry task: %v", err)
+	}
+
+	err = testTask.WaitStopped(waitTaskStateChangeDuration)
+	if err != nil {
+		t.Fatalf("Waiting for task stop error: %v", err)
+	}
+
+	time.Sleep(waitMetricsInCloudwatchDuration)
+	params.EndTime = aws.Time(RoundTimeUp(time.Now(), time.Minute).UTC())
+	params.StartTime = aws.Time((*params.EndTime).Add(-waitMetricsInCloudwatchDuration).UTC())
+	params.MetricName = aws.String("CPUUtilization")
+	if err = VerifyMetrics(cwclient, params, true); err != nil {
+		t.Errorf("Task stopped: verify metrics for CPU utilization failed:  %v", err)
+	}
+
+	params.MetricName = aws.String("MemoryUtilization")
+	if err = VerifyMetrics(cwclient, params, true); err != nil {
+		t.Errorf("Task stopped, verify metrics for memory utilization failed: %v", err)
 	}
 }

@@ -1,4 +1,4 @@
-// Copyright 2014-2015 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+// Copyright 2014-2016 Amazon.com, Inc. or its affiliates. All Rights Reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License"). You may
 // not use this file except in compliance with the License. A copy of the
@@ -40,11 +40,19 @@ const statusInternalServerError = 500
 const dockerIdQueryField = "dockerid"
 const taskArnQueryField = "taskarn"
 
-type RootResponse struct {
+type rootResponse struct {
 	AvailableCommands []string
 }
 
-func MetadataV1RequestHandlerMaker(containerInstanceArn *string, cfg *config.Config) func(http.ResponseWriter, *http.Request) {
+// ValueFromRequest returns the value of a field in the http request. The boolean value is
+// set to true if the field exists in the query.
+func ValueFromRequest(r *http.Request, field string) (string, bool) {
+	values := r.URL.Query()
+	_, exists := values[field]
+	return values.Get(field), exists
+}
+
+func metadataV1RequestHandlerMaker(containerInstanceArn *string, cfg *config.Config) func(http.ResponseWriter, *http.Request) {
 	resp := &MetadataResponse{
 		Cluster:              cfg.Cluster,
 		ContainerInstanceArn: containerInstanceArn,
@@ -57,7 +65,7 @@ func MetadataV1RequestHandlerMaker(containerInstanceArn *string, cfg *config.Con
 	}
 }
 
-func NewTaskResponse(task *api.Task, containerMap map[string]*api.DockerContainer) *TaskResponse {
+func newTaskResponse(task *api.Task, containerMap map[string]*api.DockerContainer) *TaskResponse {
 	containers := []ContainerResponse{}
 	for containerName, container := range containerMap {
 		if container.Container.IsInternal {
@@ -66,40 +74,33 @@ func NewTaskResponse(task *api.Task, containerMap map[string]*api.DockerContaine
 		containers = append(containers, ContainerResponse{container.DockerId, container.DockerName, containerName})
 	}
 
-	knownStatus := task.KnownStatus.BackendStatus()
+	knownStatus := task.GetKnownStatus()
+	knownBackendStatus := knownStatus.BackendStatus()
 	desiredStatus := task.DesiredStatus.BackendStatus()
 
-	if (knownStatus == "STOPPED" && desiredStatus != "STOPPED") || (knownStatus == "RUNNING" && desiredStatus == "PENDING") {
+	if (knownBackendStatus == "STOPPED" && desiredStatus != "STOPPED") || (knownBackendStatus == "RUNNING" && desiredStatus == "PENDING") {
 		desiredStatus = ""
 	}
 
 	return &TaskResponse{
 		Arn:           task.Arn,
 		DesiredStatus: desiredStatus,
-		KnownStatus:   knownStatus,
+		KnownStatus:   knownBackendStatus,
 		Family:        task.Family,
 		Version:       task.Version,
 		Containers:    containers,
 	}
 }
 
-func NewTasksResponse(state *dockerstate.DockerTaskEngineState) *TasksResponse {
+func newTasksResponse(state *dockerstate.DockerTaskEngineState) *TasksResponse {
 	allTasks := state.AllTasks()
 	taskResponses := make([]*TaskResponse, len(allTasks))
 	for ndx, task := range allTasks {
 		containerMap, _ := state.ContainerMapByArn(task.Arn)
-		taskResponses[ndx] = NewTaskResponse(task, containerMap)
+		taskResponses[ndx] = newTaskResponse(task, containerMap)
 	}
 
 	return &TasksResponse{Tasks: taskResponses}
-}
-
-// Returns the value of a field in the http request. The boolean value is
-// set to true if the field exists in the query.
-func valueFromRequest(r *http.Request, field string) (string, bool) {
-	values := r.URL.Query()
-	_, exists := values[field]
-	return values.Get(field), exists
 }
 
 // Creates JSON response and sets the http status code for the task queried.
@@ -108,7 +109,7 @@ func createTaskJSONResponse(task *api.Task, found bool, resourceId string, state
 	status := statusOK
 	if found {
 		containerMap, _ := state.ContainerMapByArn(task.Arn)
-		responseJSON, _ = json.Marshal(NewTaskResponse(task, containerMap))
+		responseJSON, _ = json.Marshal(newTaskResponse(task, containerMap))
 	} else {
 		log.Warn("Could not find requsted resource: " + resourceId)
 		responseJSON, _ = json.Marshal(&TaskResponse{})
@@ -120,19 +121,12 @@ func createTaskJSONResponse(task *api.Task, found bool, resourceId string, state
 // Creates response for the 'v1/tasks' API. Lists all tasks if the request
 // doesn't contain any fields. Returns a Task if either of 'dockerid' or
 // 'taskarn' are specified in the request.
-func TasksV1RequestHandlerMaker(taskEngine engine.TaskEngine) func(http.ResponseWriter, *http.Request) {
+func tasksV1RequestHandlerMaker(taskEngine DockerStateResolver) func(http.ResponseWriter, *http.Request) {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var responseJSON []byte
-		dockerTaskEngine, ok := taskEngine.(*engine.DockerTaskEngine)
-		if !ok {
-			// Could not load docker task engine.
-			w.WriteHeader(statusInternalServerError)
-			w.Write(responseJSON)
-			return
-		}
-		dockerTaskEngineState := dockerTaskEngine.State()
-		dockerId, dockerIdExists := valueFromRequest(r, dockerIdQueryField)
-		taskArn, taskArnExists := valueFromRequest(r, taskArnQueryField)
+		dockerTaskEngineState := taskEngine.State()
+		dockerId, dockerIdExists := ValueFromRequest(r, dockerIdQueryField)
+		taskArn, taskArnExists := ValueFromRequest(r, taskArnQueryField)
 		var status int
 		if dockerIdExists && taskArnExists {
 			log.Info("Request contains both ", dockerIdQueryField, " and ", taskArnQueryField, ". Expect at most one of these.")
@@ -152,7 +146,7 @@ func TasksV1RequestHandlerMaker(taskEngine engine.TaskEngine) func(http.Response
 			w.WriteHeader(status)
 		} else {
 			// List all tasks.
-			responseJSON, _ = json.Marshal(NewTasksResponse(dockerTaskEngineState))
+			responseJSON, _ = json.Marshal(newTasksResponse(dockerTaskEngineState))
 		}
 		w.Write(responseJSON)
 	}
@@ -160,7 +154,7 @@ func TasksV1RequestHandlerMaker(taskEngine engine.TaskEngine) func(http.Response
 
 var licenseProvider = utils.NewLicenseProvider()
 
-func LicenseHandler(w http.ResponseWriter, h *http.Request) {
+func licenseHandler(w http.ResponseWriter, h *http.Request) {
 	text, err := licenseProvider.GetText()
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -169,18 +163,18 @@ func LicenseHandler(w http.ResponseWriter, h *http.Request) {
 	}
 }
 
-func ServeHttp(containerInstanceArn *string, taskEngine engine.TaskEngine, cfg *config.Config) {
+func setupServer(containerInstanceArn *string, taskEngine DockerStateResolver, cfg *config.Config) http.Server {
 	serverFunctions := map[string]func(w http.ResponseWriter, r *http.Request){
-		"/v1/metadata": MetadataV1RequestHandlerMaker(containerInstanceArn, cfg),
-		"/v1/tasks":    TasksV1RequestHandlerMaker(taskEngine),
-		"/license":     LicenseHandler,
+		"/v1/metadata": metadataV1RequestHandlerMaker(containerInstanceArn, cfg),
+		"/v1/tasks":    tasksV1RequestHandlerMaker(taskEngine),
+		"/license":     licenseHandler,
 	}
 
 	paths := make([]string, 0, len(serverFunctions))
 	for path := range serverFunctions {
 		paths = append(paths, path)
 	}
-	availableCommands := &RootResponse{paths}
+	availableCommands := &rootResponse{paths}
 	// Autogenerated list of the above serverFunctions paths
 	availableCommandResponse, _ := json.Marshal(&availableCommands)
 
@@ -199,12 +193,23 @@ func ServeHttp(containerInstanceArn *string, taskEngine engine.TaskEngine, cfg *
 	loggingServeMux.Handle("/", LoggingHandler{serverMux})
 
 	server := http.Server{
-		Addr:         ":" + strconv.Itoa(config.AGENT_INTROSPECTION_PORT),
+		Addr:         ":" + strconv.Itoa(config.AgentIntrospectionPort),
 		Handler:      loggingServeMux,
 		ReadTimeout:  5 * time.Second,
 		WriteTimeout: 5 * time.Second,
 	}
 
+	return server
+}
+
+// ServeHttp serves information about this agent / containerInstance and tasks
+// running on it.
+func ServeHttp(containerInstanceArn *string, taskEngine engine.TaskEngine, cfg *config.Config) {
+	// Is this the right level to type assert, assuming we'd abstract multiple taskengines here?
+	// Revisit if we ever add another type..
+	dockerTaskEngine := taskEngine.(*engine.DockerTaskEngine)
+
+	server := setupServer(containerInstanceArn, dockerTaskEngine, cfg)
 	for {
 		once := sync.Once{}
 		utils.RetryWithBackoff(utils.NewSimpleBackoff(time.Second, time.Minute, 0.2, 2), func() error {
